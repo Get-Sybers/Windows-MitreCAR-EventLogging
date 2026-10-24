@@ -21,7 +21,7 @@ any SIEM. A property that was not observed is written empty, never inferred.
 |---|---|
 | 1. EventID table derived from the pinned model | done — [`docs/EventID-Table.md`](docs/EventID-Table.md) |
 | 2. Manifest, build, register, prove the channel | manifest generated — [`manifest/GetSybersMitreCar.man`](manifest/GetSybersMitreCar.man); CI builds the DLL, registers the channel and writes/reads back every EventID (`scripts/`) |
-| 3. Writer: live telemetry → events | next — see [`docs/Decisions.md`](docs/Decisions.md) |
+| 3. Writer: live telemetry → events | C#/.NET service (`src/GetSybersMitreCar.Writer`): first slice observes process start/stop from the kernel ETW provider in real time and writes `process/create` / `process/terminate`; CI launches a process and reads the events back |
 
 ## The model
 
@@ -46,11 +46,16 @@ user_account — no CAR field sets yet) and 9000–9099 for sensor self-events.
 ## Install and try it (Windows, elevated)
 
 ```powershell
-# from a CI artefact or a local build (needs the Windows SDK + MSVC link.exe; produces a code-free resource DLL)
+# channel: from the CI artefact `GetSybersMitreCar`, or build locally (Windows SDK + MSVC link.exe; code-free resource DLL)
 .\scripts\Build-Manifest.ps1            # manifest/GetSybersMitreCar.man -> build/GetSybersMitreCar.dll
 .\scripts\Install-Provider.ps1          # wevtutil im -> the channel appears in Event Viewer
-powershell -File .\scripts\Test-Channel.ps1 -EventId 1002   # writes process/create events and reads them back
-.\scripts\Uninstall-Provider.ps1
+.\scripts\Test-Channel.ps1 -EventId 1002  # writes two process/create events (New-WinEvent) and reads them back
+
+# sensor: build (dotnet build src/GetSybersMitreCar.Writer -c Release) or take it from the artefact, then
+.\scripts\Test-Writer.ps1               # runs it in the foreground, starts cmd.exe, checks 1002/1003 for that pid
+.\scripts\Install-Writer.ps1            # or install it as the GetSybersMitreCar service (LocalSystem, automatic)
+
+.\scripts\Uninstall-Writer.ps1; .\scripts\Uninstall-Provider.ps1
 ```
 
 ## Authoritative sources (pinned)
@@ -67,7 +72,8 @@ Elastic or STIX outputs.
 
 ```
 manifest/GetSybersMitreCar.man        the instrumentation manifest — GENERATED from the model
-scripts/                              Build-Manifest, Install-Provider, Uninstall-Provider, Test-Channel (PowerShell)
+src/GetSybersMitreCar.Writer/         the sensor (C#, .NET Framework 4.8): ETW consumer → CAR events; CarModel.g.cs is GENERATED
+scripts/                              Build-Manifest, Install/Uninstall-Provider, Test-Channel, Test-Writer, Install/Uninstall-Writer
 model/
   sources/car/                        pinned MITRE CAR data model (submodule)
   sources/byakugan/                   PIN.yaml + the vendored vocabulary / schema / ATT&CK / bindings files
@@ -75,7 +81,7 @@ model/
   templates.yaml                      the value format per CAR property (every property is win:UnicodeString)
   generated/car-eventlog-model.json   the derived model, machine-readable
 docs/EventID-Table.md                 the numbered table — GENERATED
-docs/Decisions.md                     decisions taken and the one still open (the writer)
+docs/Decisions.md                     decisions taken, including the writer's design
 tools/carmodel.py                     generate | check | dump | matrix
 tests/test_model.py                   unit tests (unittest / pytest)
 .github/workflows/ci.yml              model drift gate (ubuntu) + build/register/write/read gate (windows)

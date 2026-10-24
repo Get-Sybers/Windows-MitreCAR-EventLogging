@@ -5,7 +5,8 @@ name: ci
 #                     exactly, cross-checked against Byakugan's `car-vocab` / `model/schema`; the
 #                     generated table, JSON model and manifest are fresh.
 #   channel (windows) the manifest compiles into the resource DLL, registers as the channel, and every
-#                     EventID writes and reads back as object (Task) + action (Opcode) + properties.
+#                     EventID writes and reads back as object (Task) + action (Opcode) + properties; then
+#                     the C# writer is built and run against a live process start/stop.
 
 on:
   push:
@@ -94,12 +95,21 @@ jobs:
         shell: powershell
         run: ./scripts/Test-Channel.ps1 -Header build/GetSybersMitreCar.h
 
+      - name: Build the writer (C#, .NET Framework 4.8)
+        shell: pwsh
+        run: dotnet build src/GetSybersMitreCar.Writer -c Release -nologo
+
+      - name: Run the writer against a live process start and stop; read process/create and process/terminate back
+        shell: pwsh
+        run: ./scripts/Test-Writer.ps1
+
       - name: Unregister
         if: always()
         shell: pwsh
         run: ./scripts/Uninstall-Provider.ps1
 
-      - name: Publish the installable set (DLL, manifest, mc.exe header, scripts)
+      - name: Publish the installable set (resource DLL, manifest, writer, scripts)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: GetSybersMitreCar
@@ -107,6 +117,5 @@ jobs:
             build/GetSybersMitreCar.dll
             build/GetSybersMitreCar.h
             manifest/GetSybersMitreCar.man
-            scripts/Install-Provider.ps1
-            scripts/Uninstall-Provider.ps1
-            scripts/Test-Channel.ps1
+            src/GetSybersMitreCar.Writer/bin/Release/net48/
+            scripts/*.ps1

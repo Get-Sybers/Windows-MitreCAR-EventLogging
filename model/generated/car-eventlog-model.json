@@ -119,6 +119,7 @@
     }
   ],
   "type": "win:UnicodeString",
+  "channel_keyword": "0x8000000000000000",
   "formats": {
     "text": {
       "basis": "as observed — names, paths, '<DOMAIN>\\<USER>', free text; the writer truncates long text so a record stays well under the ~30 KB render limit"

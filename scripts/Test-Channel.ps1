@@ -7,15 +7,15 @@ action and properties for every EventID.
 .DESCRIPTION
 For each EventID in the model (or those given with -EventId) two events are written: one with every
 property set to the CAR example value, one with every property empty (empty = not observed). Events are
-written with .NET's System.Diagnostics.Eventing.EventProvider - no compiled code. The event descriptors
-(id, version, channel, level, opcode, task, keywords) are taken from the header mc.exe generated when the
-DLL was built, so the test uses exactly what the registered manifest declares.
+written with the in-box New-WinEvent cmdlet, which marshals the payload from the registered template - no
+compiled code. The event descriptors mc.exe generated into the header when the DLL was built are checked
+against the values the model (and the C# writer) compute: same id, channel, level, opcode, task and keywords.
 
 Each event read back must have: the EventID; Task = the object (number and display name); Opcode = the
 action (number and display name); the object's keyword; EventData property names in the model's order
 with the written values; and a rendered message (which proves the resource DLL is found).
 
-Run under Windows PowerShell 5.1 (powershell.exe): EventProvider lives in the .NET Framework.
+Runs under Windows PowerShell 5.1 or PowerShell 7 on Windows (New-WinEvent is in Microsoft.PowerShell.Diagnostics).
 #>
 [CmdletBinding()]
 param(
@@ -26,11 +26,6 @@ param(
     [int]$TimeoutSeconds = 60
 )
 $ErrorActionPreference = 'Stop'
-if ($PSVersionTable.PSEdition -eq 'Core') {
-    throw 'run this under Windows PowerShell 5.1 (powershell.exe): System.Diagnostics.Eventing.EventProvider is .NET Framework only'
-}
-Add-Type -AssemblyName System.Core
-
 # NB: $Model is the [string] path parameter; PowerShell variables are case-insensitive, so the parsed
 # model must live in a differently named variable or it is coerced back to a string.
 $spec = Get-Content -Raw -Encoding UTF8 $Model | ConvertFrom-Json
@@ -43,12 +38,27 @@ $descriptors = @{}
 foreach ($m in (Select-String -Path $Header -Pattern 'EVENT_DESCRIPTOR\s+(\w+)\s*=\s*\{([^}]*)\}')) {
     $g = $m.Matches[0].Groups
     $p = @($g[2].Value -split ',' | ForEach-Object { $_.Trim() -replace '^0[xX]', '' })
-    $descriptors[$g[1].Value] = New-Object System.Diagnostics.Eventing.EventDescriptor(
-        [int][Convert]::ToInt32($p[0], 16),  [byte][Convert]::ToInt32($p[1], 16), [byte][Convert]::ToInt32($p[2], 16),
-        [byte][Convert]::ToInt32($p[3], 16), [byte][Convert]::ToInt32($p[4], 16), [int][Convert]::ToInt32($p[5], 16),
-        [long][Convert]::ToInt64($p[6], 16))
+    $descriptors[$g[1].Value] = [pscustomobject]@{
+        Id = [Convert]::ToInt32($p[0], 16); Version = [Convert]::ToInt32($p[1], 16); Channel = [Convert]::ToInt32($p[2], 16)
+        Level = [Convert]::ToInt32($p[3], 16); Opcode = [Convert]::ToInt32($p[4], 16); Task = [Convert]::ToInt32($p[5], 16)
+        Keywords = [Convert]::ToUInt64($p[6], 16)
+    }
 }
 if ($descriptors.Count -eq 0) { throw "no EVENT_DESCRIPTOR found in $Header" }
+
+# --- the descriptors mc.exe generated must equal what the model (and the C# writer) compute --------
+$channelKeyword = [Convert]::ToUInt64($spec.channel_keyword.Substring(2), 16)
+$mismatches = @()
+foreach ($e in $spec.events) {
+    $d = $descriptors[$e.symbol]
+    if (-not $d) { $mismatches += "$($e.symbol): missing from the header"; continue }
+    $wantKeywords = [Convert]::ToUInt64($e.keyword.Substring(2), 16) -bor $channelKeyword
+    $want = "id=$($e.id) version=0 channel=$($spec.provider.channel.value) level=4 opcode=$($e.opcode) task=$($e.task) keywords=0x$($wantKeywords.ToString('x16'))"
+    $have = "id=$($d.Id) version=$($d.Version) channel=$($d.Channel) level=$($d.Level) opcode=$($d.Opcode) task=$($d.Task) keywords=0x$($d.Keywords.ToString('x16'))"
+    if ($want -ne $have) { $mismatches += "$($e.symbol): header $have != model $want" }
+}
+if ($mismatches) { throw "descriptor mismatch between mc.exe's header and the model:`n  " + ($mismatches -join "`n  ") }
+Write-Host ("descriptors: all {0} in the header equal the model's (channel keyword 0x{1})" -f $spec.events.Count, $channelKeyword.ToString('x16'))
 
 $fieldsOf = @{}
 foreach ($o in $spec.objects) { $fieldsOf[$o.key] = @($o.fields) }
@@ -67,26 +77,17 @@ if (-not $SkipClear) {
     if ($LASTEXITCODE) { throw "wevtutil cl $log failed ($LASTEXITCODE) - run elevated or pass -SkipClear" }
 }
 
-# --- write -----------------------------------------------------------------------------------
-$provider = New-Object System.Diagnostics.Eventing.EventProvider ([guid]$spec.provider.guid)
-$write = [System.Diagnostics.Eventing.EventProvider].GetMethod('WriteEvent',
-    [type[]]@([System.Diagnostics.Eventing.EventDescriptor].MakeByRefType(), [object[]]))
+# --- write (New-WinEvent marshals the payload from the registered template; no 8-string cap) ------
 $expected = New-Object System.Collections.Generic.List[object]
-try {
-    foreach ($e in $events) {
-        $d = $descriptors[$e.symbol]
-        if (-not $d) { throw "no descriptor for $($e.symbol) in $Header" }
-        $fields = $fieldsOf[$e.object]
-        $full  = [object[]]@($fields | ForEach-Object { if ($null -ne $_.example) { [string]$_.example } else { '' } })
-        $empty = [object[]]@($fields | ForEach-Object { '' })
-        foreach ($payload in @($full, $empty)) {
-            $ok = $write.Invoke($provider, [object[]]@($d, $payload))
-            if (-not $ok) { throw "WriteEvent $($e.id) $($e.object)/$($e.action) failed: $($provider.GetLastWriteEventError())" }
-            $expected.Add([pscustomobject]@{ Event = $e; Payload = $payload })
-        }
+foreach ($e in $events) {
+    $fields = $fieldsOf[$e.object]
+    $full  = [object[]]@($fields | ForEach-Object { if ($null -ne $_.example) { [string]$_.example } else { '' } })
+    $empty = [object[]]@($fields | ForEach-Object { '' })
+    foreach ($payload in @($full, $empty)) {
+        New-WinEvent -ProviderName $spec.provider.name -Id $e.id -Version 0 -Payload $payload
+        $expected.Add([pscustomobject]@{ Event = $e; Payload = $payload })
     }
 }
-finally { $provider.Dispose() }
 Write-Host ("wrote {0} events ({1} EventIDs x 2) to {2}" -f $expected.Count, $events.Count, $log)
 
 # --- read back ---------------------------------------------------------------------------------
