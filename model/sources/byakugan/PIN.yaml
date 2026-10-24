@@ -34,6 +34,16 @@ files:
     # each with its legal action enum. The promoted objects carry actions only — no CAR field set.
     semantics: "the JSON Schema object/action vocabulary (the `model/schema/` authority for the matrix)"
     check: "byte-identical to the file at the pin"
+  attack_data_sources_objects.yaml:
+    source_path: model/sources/attack-datasources/attack_data_sources_objects.yaml
+    # Byakugan's vendored FROZEN copy of mitre-attack/attack-datasources docs/attack_data_sources_objects.yaml
+    # @ 5d50f731de441eb09078623a2c29cc3420a01949 (upstream archived; pin in the file's own header).
+    # build_data_model.build_superset() unions each ATT&CK data component (normalised to an action
+    # verb by _action_for) into the CAR object it overlaps — that is where the 23 overlay actions in
+    # car-vocab come from. The generator here ports _key/_action_for verbatim and PROVES the port
+    # reproduces car-vocab, then shows each overlay action's data-component definition in the table.
+    semantics: "the ATT&CK data-source objects and data components behind the overlay actions"
+    check: "byte-identical to the file at the pin"
   matched-evidences.yaml:
     source_path: model/schema/matched-evidences.yaml
     # The reviewed evidence overlay. Only its `evtx:` section is read here — the Windows event →

@@ -1,9 +1,11 @@
-name: model-drift-gate
+name: ci
 
-# The CI gate the mission brief asks for (§9): the object × action matrix and the field lists must
-# match the pinned CAR model exactly, cross-checked against Byakugan's `car-vocab` / `model/schema`.
-# Nothing here needs Windows; the manifest build and the writer get their own windows-latest job
-# once the implementation language is confirmed (docs/Decisions.md §D1).
+# Two gates:
+#   model   (ubuntu)  the object × action matrix and the property sets match the pinned CAR model
+#                     exactly, cross-checked against Byakugan's `car-vocab` / `model/schema`; the
+#                     generated table, JSON model and manifest are fresh.
+#   channel (windows) the manifest compiles into the resource DLL, registers as the channel, and every
+#                     EventID writes and reads back as object (Task) + action (Opcode) + properties.
 
 on:
   push:
@@ -14,7 +16,7 @@ permissions:
 
 jobs:
   model:
-    name: pinned model ⇄ registry ⇄ generated table
+    name: pinned model ⇄ registry ⇄ generated table + manifest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,10 +42,12 @@ jobs:
           set -euo pipefail
           commit=$(python -c "import yaml;print(yaml.safe_load(open('model/sources/byakugan/PIN.yaml'))['commit'])")
           raw="https://raw.githubusercontent.com/Get-Sybers/Byakugan/$commit"
-          curl -sSfL "$raw/model/schema/vocab/car-actions.schema.json" -o /tmp/car-actions.schema.json
-          curl -sSfL "$raw/model/schema/matched-evidences.yaml"       -o /tmp/matched-evidences.yaml
-          cmp /tmp/car-actions.schema.json model/sources/byakugan/car-actions.schema.json
-          cmp /tmp/matched-evidences.yaml  model/sources/byakugan/matched-evidences.yaml
+          curl -sSfL "$raw/model/schema/vocab/car-actions.schema.json"                        -o /tmp/car-actions.schema.json
+          curl -sSfL "$raw/model/schema/matched-evidences.yaml"                              -o /tmp/matched-evidences.yaml
+          curl -sSfL "$raw/model/sources/attack-datasources/attack_data_sources_objects.yaml" -o /tmp/attack_data_sources_objects.yaml
+          cmp /tmp/car-actions.schema.json         model/sources/byakugan/car-actions.schema.json
+          cmp /tmp/matched-evidences.yaml          model/sources/byakugan/matched-evidences.yaml
+          cmp /tmp/attack_data_sources_objects.yaml model/sources/byakugan/attack_data_sources_objects.yaml
 
       - name: car-vocab.json equals Byakugan's published car_action lists at the pin
         run: |
@@ -65,8 +69,44 @@ jobs:
           print('car-vocab.json matches model/car/objects at the pin:', len(have), 'objects')
           PY
 
-      - name: Validate the model and fail on generated-output drift
+      - name: Validate the model and fail on generated-output drift (table, JSON, manifest)
         run: python tools/carmodel.py check
 
       - name: Unit tests
         run: python -m pytest -q tests
+
+  channel:
+    name: manifest → resource DLL → channel → write/read every EventID
+    runs-on: windows-latest
+    needs: model
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build GetSybersMitreCar.dll (mc.exe → rc.exe → link.exe /noentry — resources only, no source code)
+        shell: pwsh
+        run: ./scripts/Build-Manifest.ps1 -OutDir build
+
+      - name: Register the provider and the Get-Sybers-MitreCAR/Operational channel (wevtutil im)
+        shell: pwsh
+        run: ./scripts/Install-Provider.ps1 -Dll build/GetSybersMitreCar.dll
+
+      - name: Write one populated and one empty event per EventID, read all back, verify object/action/properties
+        shell: powershell
+        run: ./scripts/Test-Channel.ps1 -Header build/GetSybersMitreCar.h
+
+      - name: Unregister
+        if: always()
+        shell: pwsh
+        run: ./scripts/Uninstall-Provider.ps1
+
+      - name: Publish the installable set (DLL, manifest, mc.exe header, scripts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: GetSybersMitreCar
+          path: |
+            build/GetSybersMitreCar.dll
+            build/GetSybersMitreCar.h
+            manifest/GetSybersMitreCar.man
+            scripts/Install-Provider.ps1
+            scripts/Uninstall-Provider.ps1
+            scripts/Test-Channel.ps1
