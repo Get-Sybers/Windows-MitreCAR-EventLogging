@@ -31,8 +31,11 @@ if ($PSVersionTable.PSEdition -eq 'Core') {
 }
 Add-Type -AssemblyName System.Core
 
-$model = Get-Content -Raw -Encoding UTF8 $Model | ConvertFrom-Json
-$log = $model.provider.channel.name
+# NB: $Model is the [string] path parameter; PowerShell variables are case-insensitive, so the parsed
+# model must live in a differently named variable or it is coerced back to a string.
+$spec = Get-Content -Raw -Encoding UTF8 $Model | ConvertFrom-Json
+if (-not $spec -or -not $spec.events) { throw "could not read the model from $Model" }
+$log = $spec.provider.channel.name
 
 # --- event descriptors from the mc.exe header -----------------------------------------------
 # EXTERN_C __declspec(selectany) const EVENT_DESCRIPTOR GSCAR_PROCESS_CREATE = {0x3ea, 0x0, 0x10, 0x4, 0x10, 0x1, 0x8000000000000001};
@@ -48,10 +51,16 @@ foreach ($m in (Select-String -Path $Header -Pattern 'EVENT_DESCRIPTOR\s+(\w+)\s
 if ($descriptors.Count -eq 0) { throw "no EVENT_DESCRIPTOR found in $Header" }
 
 $fieldsOf = @{}
-foreach ($o in $model.objects) { $fieldsOf[$o.key] = @($o.fields) }
+foreach ($o in $spec.objects) { $fieldsOf[$o.key] = @($o.fields) }
 
-$events = @($model.events | Where-Object { -not $EventId -or ($EventId -contains $_.id) })
-if (-not $events) { throw 'no events selected' }
+$all = @($spec.events)
+if ($PSBoundParameters.ContainsKey('EventId')) {
+    $events = @($all | Where-Object { $EventId -contains [int]$_.id })
+} else {
+    $events = $all
+}
+Write-Host ("model: {0} objects, {1} events; selected {2}" -f @($spec.objects).Count, $all.Count, $events.Count)
+if ($events.Count -eq 0) { throw "no events selected (EventId filter: $($EventId -join ','))" }
 
 if (-not $SkipClear) {
     & wevtutil.exe cl $log
@@ -59,7 +68,7 @@ if (-not $SkipClear) {
 }
 
 # --- write -----------------------------------------------------------------------------------
-$provider = New-Object System.Diagnostics.Eventing.EventProvider ([guid]$model.provider.guid)
+$provider = New-Object System.Diagnostics.Eventing.EventProvider ([guid]$spec.provider.guid)
 $write = [System.Diagnostics.Eventing.EventProvider].GetMethod('WriteEvent',
     [type[]]@([System.Diagnostics.Eventing.EventDescriptor].MakeByRefType(), [object[]]))
 $expected = New-Object System.Collections.Generic.List[object]
