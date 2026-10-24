@@ -1,0 +1,3 @@
+[submodule "model/sources/car"]
+	path = model/sources/car
+	url = https://github.com/Get-Sybers/car.git

@@ -1,0 +1,44 @@
+# model/sources/byakugan/PIN.yaml — the Byakugan pin behind every vendored file in this directory.
+#
+# Byakugan (https://github.com/Get-Sybers/Byakugan) is this project's SCHEMA SOURCE: the
+# authoritative definition of the CAR data model (objects, actions, property sets, the canonical
+# action vocabulary). It is NOT an integration target — nothing in this repository writes to its
+# stores, its CAR→ECS projection, Elastic (`logs-car.*`) or STIX outputs.
+#
+# The files beside this one are verbatim copies (or exact tool output) taken at the commit below.
+# CI re-fetches them at that commit and fails on any difference; a refresh is a pin bump here
+# followed by re-copying — never a hand edit.
+repository: https://github.com/Get-Sybers/Byakugan
+commit: 8e151977a05d607b87ef852617058ee23967a6e0
+committed: "2026-10-21T05:27:11+10:30"
+
+car_submodule:
+  # Byakugan's own `model/sources/car` pin. This repository's `model/sources/car` submodule is
+  # pinned to the SAME commit, so both projects read one CAR data model.
+  url: https://github.com/Get-Sybers/car.git
+  commit: 1b922fe1527d956e222a99473472e594f10f610b
+
+files:
+  car-vocab.json:
+    produced_by: "byakugan car-vocab"
+    # byakugan/cli.py car_vocab(): json.dump({object: sorted(actions)}) over byakugan.carmodel.load().
+    # carmodel.load() = fields from the pinned car submodule + actions from the CAR + ATT&CK
+    # superset (build_data_model.build_superset) — the same union model/generate.py writes into
+    # model/car/objects/*.yml `car_action`. One JSON line, 13 objects.
+    semantics: "the canonical car_action vocabulary (13 CAR objects; CAR actions + ATT&CK data-component actions)"
+    check: "equals {object: sorted(car_action)} over model/car/objects/*.yml at the pin"
+  car-actions.schema.json:
+    source_path: model/schema/vocab/car-actions.schema.json
+    # "GENERATED from model/car/objects" by byakugan.schema_gen: the 13 CAR objects plus the three
+    # PROMOTED objects (user_account, group, scheduled_job — docs/research/car-vocabulary-ruling.md),
+    # each with its legal action enum. The promoted objects carry actions only — no CAR field set.
+    semantics: "the JSON Schema object/action vocabulary (the `model/schema/` authority for the matrix)"
+    check: "byte-identical to the file at the pin"
+  matched-evidences.yaml:
+    source_path: model/schema/matched-evidences.yaml
+    # The reviewed evidence overlay. Only its `evtx:` section is read here — the Windows event →
+    # (object, action) bindings Byakugan has ruled on — to fill the coverage column of the EventID
+    # table and seed the writer's provider→CAR map. Every other section is dead-box provenance and
+    # is deliberately ignored (out of scope for a live sensor).
+    semantics: "Windows event-id → CAR (object, action) bindings, evidence-typed"
+    check: "byte-identical to the file at the pin"
