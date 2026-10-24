@@ -1,0 +1,72 @@
+name: model-drift-gate
+
+# The CI gate the mission brief asks for (§9): the object × action matrix and the field lists must
+# match the pinned CAR model exactly, cross-checked against Byakugan's `car-vocab` / `model/schema`.
+# Nothing here needs Windows; the manifest build and the writer get their own windows-latest job
+# once the implementation language is confirmed (docs/Decisions.md §D1).
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  model:
+    name: pinned model ⇄ registry ⇄ generated table
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true          # model/sources/car at its pinned commit
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python -m pip install --quiet pyyaml pytest
+
+      - name: Submodule is at the commit PIN.yaml records
+        run: |
+          want=$(python -c "import yaml;print(yaml.safe_load(open('model/sources/byakugan/PIN.yaml'))['car_submodule']['commit'])")
+          have=$(git -C model/sources/car rev-parse HEAD)
+          echo "pinned=$want checked-out=$have"
+          test "$want" = "$have"
+
+      - name: Vendored Byakugan files are byte-identical to the pinned Byakugan commit
+        run: |
+          set -euo pipefail
+          commit=$(python -c "import yaml;print(yaml.safe_load(open('model/sources/byakugan/PIN.yaml'))['commit'])")
+          raw="https://raw.githubusercontent.com/Get-Sybers/Byakugan/$commit"
+          curl -sSfL "$raw/model/schema/vocab/car-actions.schema.json" -o /tmp/car-actions.schema.json
+          curl -sSfL "$raw/model/schema/matched-evidences.yaml"       -o /tmp/matched-evidences.yaml
+          cmp /tmp/car-actions.schema.json model/sources/byakugan/car-actions.schema.json
+          cmp /tmp/matched-evidences.yaml  model/sources/byakugan/matched-evidences.yaml
+
+      - name: car-vocab.json equals Byakugan's published car_action lists at the pin
+        run: |
+          set -euo pipefail
+          commit=$(python -c "import yaml;print(yaml.safe_load(open('model/sources/byakugan/PIN.yaml'))['commit'])")
+          raw="https://raw.githubusercontent.com/Get-Sybers/Byakugan/$commit/model/car/objects"
+          mkdir -p /tmp/car-objects
+          for o in $(python -c "import json;print(' '.join(sorted(json.load(open('model/sources/byakugan/car-vocab.json')))))"); do
+            curl -sSfL "$raw/$o.yml" -o "/tmp/car-objects/$o.yml"
+          done
+          python - <<'PY'
+          import json, yaml, glob, os, sys
+          want = json.load(open('model/sources/byakugan/car-vocab.json'))
+          have = {os.path.basename(p)[:-4]: sorted(yaml.safe_load(open(p))['car_action'])
+                  for p in glob.glob('/tmp/car-objects/*.yml')}
+          if have != want:
+              print('car-vocab drift:', {k: (want.get(k), have.get(k)) for k in set(want) | set(have) if want.get(k) != have.get(k)})
+              sys.exit(1)
+          print('car-vocab.json matches model/car/objects at the pin:', len(have), 'objects')
+          PY
+
+      - name: Validate the model and fail on generated-output drift
+        run: python tools/carmodel.py check
+
+      - name: Unit tests
+        run: python -m pytest -q tests

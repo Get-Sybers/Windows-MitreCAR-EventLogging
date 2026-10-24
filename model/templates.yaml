@@ -1,0 +1,115 @@
+# model/templates.yaml — the typed templates: one per CAR object, reused across that object's actions.
+#
+# The field LIST per object is not declared here — it is read from the pinned model
+# (model/sources/car/data_model/<object>.yaml) so it cannot drift. This file adds the one thing the
+# CAR data model does not carry: a wire TYPE per field. Every field not listed under an object is a
+# `string` (win:UnicodeString); only the fields that deviate are listed, each with its basis.
+#
+# Typing precedents: CAR descriptions/examples; the mission brief §6 (IPs and hashes as strings —
+# ETW has no IP type); and, as a cross-check, the type decisions Byakugan's CAR→ECS projection made
+# for the same fields (model/projection/ecs_types.yml at the Byakugan pin: date/long/ip/boolean,
+# keyword otherwise). The generator validates that every listed field exists in the pinned model and
+# that every rule referenced is defined.
+
+# Provider-level fields written at the head of EVERY template. They are sensor envelope, not CAR
+# properties, and are rendered separately in the table. (Brief §6: carry the observed event time as
+# an explicit field; stamp host identity on every event.)
+envelope:
+  - name: UtcTime
+    rule: utc_time
+    description: The instant the underlying activity was observed, UTC — the source telemetry's own timestamp (ETW stamps TimeCreated separately when the event is logged).
+  - name: Host
+    rule: string
+    description: Host identity of the observing machine — the FQDN when domain-joined, else the computer name. Present even on objects whose CAR property set has no fqdn/hostname.
+  - name: SourceProvider
+    rule: string
+    description: Which live telemetry supplied this record (provider and event id). Lets a consumer judge how each field was populated; never inferred.
+
+# How a rule becomes ETW template data.
+rules:
+  string:      {in: "win:UnicodeString", basis: "default — names, paths, hashes (hex), SIDs, IPs (brief §6), free text; the writer truncates long text to keep a record well under the ~30 KB render limit"}
+  pid:         {in: "win:UInt32", out: "win:PID",       basis: "a process id (decimal in CAR)"}
+  tid:         {in: "win:UInt32", out: "win:TID",       basis: "a thread id"}
+  port:        {in: "win:UInt16",                       basis: "a TCP/UDP port; plain unsignedShort (win:Port would expect network byte order)"}
+  bytes:       {in: "win:UInt64",                       basis: "a byte count"}
+  count:       {in: "win:UInt64",                       basis: "a packet count"}
+  utc_time:    {in: "win:FILETIME",                     basis: "an absolute UTC timestamp; rendered as dateTime"}
+  bool:        {in: "win:Boolean",                      basis: "a boolean indicator"}
+  address:     {in: "win:UInt64", out: "win:HexInt64",  basis: "a virtual address (CAR examples are 0x-prefixed hex); 64-bit regardless of process bitness"}
+  mask:        {in: "win:UInt32", out: "win:HexInt32",  basis: "an access mask (CAR example 0x40)"}
+  guid:        {in: "win:GUID",                         basis: "a GUID identifier (CAR example '{f81d4fae-…}'); minted by the sensor Sysmon-style when the source telemetry has none"}
+  luid:        {in: "win:UInt64", out: "win:HexInt64",  basis: "a logon id — a 64-bit LUID (CAR example 0xf61f3)"}
+  duration_ms: {in: "win:UInt32",                       basis: "a duration in milliseconds (CAR example '12ms')"}
+  status_code: {in: "win:UInt16",                       basis: "an HTTP status code"}
+
+objects:
+  authentication:
+    response_time: duration_ms
+  driver:
+    base_address: address
+    pid: pid
+    signature_valid: bool
+  email:
+    attachment_size: bytes      # CAR example is loose text ('567 Kb'); typed as bytes, as Byakugan's projection does
+    dest_port: port
+    date: utc_time              # the SMTP Date header, parsed to UTC
+    src_port: port
+  file:
+    creation_time: utc_time
+    pid: pid
+    ppid: pid
+    previous_creation_time: utc_time
+    signature_valid: bool
+  flow:
+    dest_port: port
+    src_port: port
+    start_time: utc_time
+    end_time: utc_time
+    packet_count: count
+    pid: pid
+    ppid: pid
+    in_bytes: bytes
+    out_bytes: bytes
+  http:
+    request_body_bytes: bytes
+    response_body_bytes: bytes
+    response_status_code: status_code
+  module:
+    base_address: address
+    pid: pid
+    tid: tid
+    signature_valid: bool
+  process:
+    pid: pid
+    ppid: pid
+    access_level: mask
+    guid: guid
+    parent_guid: guid
+    signature_valid: bool
+    target_guid: guid
+    target_pid: pid
+  registry:
+    pid: pid
+  service:
+    pid: pid
+    ppid: pid
+  socket:
+    pid: pid
+    success: bool
+    local_port: port
+    remote_port: port
+  thread:
+    src_pid: pid
+    src_tid: tid
+    tgt_pid: pid
+    tgt_tid: tid
+    stack_base: address
+    stack_limit: address
+    start_address: address
+    user_stack_base: address
+    user_stack_limit: address
+  user_session:
+    dest_port: port
+    login_id: luid
+    src_port: port
+    login_successful: bool
