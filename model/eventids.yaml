@@ -1,80 +1,88 @@
 # model/eventids.yaml — THE EventID registry.
 #
 # Hand-pinned and reviewed. The generator (tools/carmodel.py) VALIDATES this file against the pinned
-# model and renders the EventID table from it; it never renumbers. Once a number is published it is
-# wire format: an action or object that leaves the model keeps its number as `retired`, a new one
-# takes the next free slot in its range. Changing a published number is a schema-version bump.
+# model and renders the EventID table and the manifest from it; it never renumbers. Once a number is
+# published it is wire format: an action or object that leaves the model keeps its number as
+# `retired`, a new one takes the next free slot in its range. Changing a published number is a
+# schema-version bump.
 #
 # Sources this file is checked against (see model/sources/):
 #   - model/sources/car            the pinned MITRE CAR data model (objects, actions, property sets)
 #   - model/sources/byakugan/car-vocab.json          the canonical car_action vocabulary (`byakugan car-vocab`)
 #   - model/sources/byakugan/car-actions.schema.json the model/schema vocabulary (adds the promoted objects)
+#   - model/sources/byakugan/attack_data_sources_objects.yaml  the ATT&CK data components the overlay actions come from
 #
-# Invariants the generator enforces:
-#   * exactly one event per (object, action) in car-vocab; none outside it
-#   * EventID = object base + offset; offsets 1–49 for actions in the pinned CAR submodule
-#     (`provenance: car`), 50–99 for actions car-vocab adds from the ATT&CK data-component overlay
-#     (`provenance: superset`) — so the pinned-CAR numbers never move whatever is decided about the overlay
-#   * Task = EventID div 100 (the hundreds digits ARE the object): filter by Task, slice by ID range
-#   * one global Opcode per action name (custom opcodes 10–238; 0–9 reserved by ETW), so
-#     "Opcode = create" selects creates across every object
-#   * one Keyword bit per object (bits 0–47 are provider-defined; the top 16 are reserved by ETW)
+# Numbering rule (applied 2026-10-24, pinned thereafter) — every number follows a pinned source's own
+# order; none follows judgement or the brief's illustrative examples:
+#   * objects: the six the brief's EventID scheme (§5.1) fixes, in its order (process 1000, file 1100,
+#     flow 1200, registry 1300, module 1400, thread 1500), then the three it lists next in its order
+#     (driver 1600, user_session 1700, service 1800), then the rest in car-vocab order, i.e.
+#     alphabetical (authentication 1900, email 2000, http 2100, socket 2200)
+#   * Task = the object's ordinal in that order (1–13); Keyword = bit (ordinal − 1); one bit per object
+#   * actions within an object: car-vocab order (alphabetical) — actions present in the pinned CAR
+#     submodule take offsets 1–49 (`provenance: car`), actions car-vocab adds from the ATT&CK
+#     data-component overlay take offsets 50–99 (`provenance: superset`) — so the pinned-CAR numbers
+#     never move whatever is later decided about the overlay
+#   * Opcodes: one global value per action name — pinned-CAR names alphabetical from 10, then the
+#     five names only the overlay adds (content, enumerate, execute, flow, metadata)
+#
+# Limits (MicrosoftDocs/win32 desktop-src/WES, MicrosoftDocs/sdk-api evntprov): custom opcode values
+# 10–239; task values 1–239; keyword mask a single bit in bits 0–47; EventWrite ≤ 128 data items;
+# an event message ≤ 100 insertion strings; an event ≤ 64 KB minus header.
 
 schema_version: 1
 
-provider:                       # names are DECISION ITEMS (docs/Decisions.md §D5) — proposed defaults
+provider:                       # names confirmed 2026-10-24 (docs/Decisions.md D5)
   name: Get-Sybers-MitreCAR
   symbol: GSCAR
-  guid: 5bc454ac-3ed9-4b89-b9f4-af8202af0ed8     # proposed; freshly generated (uuid4) — replace if a GUID is already allocated
+  guid: 5bc454ac-3ed9-4b89-b9f4-af8202af0ed8
+  resource_dll: GetSybersMitreCar.dll
   channel:
     name: Get-Sybers-MitreCAR/Operational
     type: Operational
-    symbol: GSCAR_CHANNEL_OPERATIONAL
+    chid: GSCAR_CHANNEL_OPERATIONAL
+    value: 16                   # channel values 0–15 are the system's; mc.exe would assign 16 to the first custom channel anyway
+    max_size_bytes: 67108864    # 64 MiB backing file (Sysmon's default); a deployment may resize with wevtutil sl /ms
 
 id_scheme:
   object_range_width: 100
-  task_rule: "Task = EventID div 100"
   offsets:
-    car: [1, 49]            # actions present in the pinned CAR submodule (model/sources/car/data_model/*.yaml)
-    superset: [50, 99]      # actions car-vocab adds from the ATT&CK data-component overlay (same object, no new fields)
-  opcode_range: [10, 238]   # provider-defined ETW opcode values
-  keyword_bits: [0, 47]     # provider-defined ETW keyword bits
-  # Initial numbering rule (applied once, 2026-10-24; pinned thereafter): within an object, the
-  # actions the mission brief listed as examples come first in the brief's order, then the remaining
-  # pinned-CAR actions in the order the CAR data_model/<object>.yaml lists them; superset-only
-  # actions follow alphabetically from offset 50.
+    car: [1, 49]
+    superset: [50, 99]
+  opcode_range: [10, 239]
+  task_range: [1, 239]
+  keyword_bits: [0, 47]
 
 objects:
-  # name           task  base  keyword bit (mask)                 symbol
-  - {name: process,        task: 10, base: 1000, keyword: 0x0000000000000001, keyword_symbol: GSCAR_KW_PROCESS}
-  - {name: file,           task: 11, base: 1100, keyword: 0x0000000000000002, keyword_symbol: GSCAR_KW_FILE}
-  - {name: flow,           task: 12, base: 1200, keyword: 0x0000000000000004, keyword_symbol: GSCAR_KW_FLOW}
-  - {name: registry,       task: 13, base: 1300, keyword: 0x0000000000000008, keyword_symbol: GSCAR_KW_REGISTRY}
-  - {name: module,         task: 14, base: 1400, keyword: 0x0000000000000010, keyword_symbol: GSCAR_KW_MODULE}
-  - {name: thread,         task: 15, base: 1500, keyword: 0x0000000000000020, keyword_symbol: GSCAR_KW_THREAD}
-  - {name: driver,         task: 16, base: 1600, keyword: 0x0000000000000040, keyword_symbol: GSCAR_KW_DRIVER}
-  - {name: service,        task: 17, base: 1700, keyword: 0x0000000000000080, keyword_symbol: GSCAR_KW_SERVICE}
-  - {name: user_session,   task: 18, base: 1800, keyword: 0x0000000000000100, keyword_symbol: GSCAR_KW_USER_SESSION}
-  - {name: authentication, task: 19, base: 1900, keyword: 0x0000000000000200, keyword_symbol: GSCAR_KW_AUTHENTICATION}
-  - {name: socket,         task: 20, base: 2000, keyword: 0x0000000000000400, keyword_symbol: GSCAR_KW_SOCKET}
-  - {name: http,           task: 21, base: 2100, keyword: 0x0000000000000800, keyword_symbol: GSCAR_KW_HTTP}
-  - {name: email,          task: 22, base: 2200, keyword: 0x0000000000001000, keyword_symbol: GSCAR_KW_EMAIL}
+  # name            task  base   keyword bit (mask)                 symbol
+  - {name: process,         task: 1, base: 1000, keyword: 0x0000000000000001, keyword_symbol: GSCAR_KW_PROCESS}
+  - {name: file,            task: 2, base: 1100, keyword: 0x0000000000000002, keyword_symbol: GSCAR_KW_FILE}
+  - {name: flow,            task: 3, base: 1200, keyword: 0x0000000000000004, keyword_symbol: GSCAR_KW_FLOW}
+  - {name: registry,        task: 4, base: 1300, keyword: 0x0000000000000008, keyword_symbol: GSCAR_KW_REGISTRY}
+  - {name: module,          task: 5, base: 1400, keyword: 0x0000000000000010, keyword_symbol: GSCAR_KW_MODULE}
+  - {name: thread,          task: 6, base: 1500, keyword: 0x0000000000000020, keyword_symbol: GSCAR_KW_THREAD}
+  - {name: driver,          task: 7, base: 1600, keyword: 0x0000000000000040, keyword_symbol: GSCAR_KW_DRIVER}
+  - {name: user_session,    task: 8, base: 1700, keyword: 0x0000000000000080, keyword_symbol: GSCAR_KW_USER_SESSION}
+  - {name: service,         task: 9, base: 1800, keyword: 0x0000000000000100, keyword_symbol: GSCAR_KW_SERVICE}
+  - {name: authentication,  task: 10, base: 1900, keyword: 0x0000000000000200, keyword_symbol: GSCAR_KW_AUTHENTICATION}
+  - {name: email,           task: 11, base: 2000, keyword: 0x0000000000000400, keyword_symbol: GSCAR_KW_EMAIL}
+  - {name: http,            task: 12, base: 2100, keyword: 0x0000000000000800, keyword_symbol: GSCAR_KW_HTTP}
+  - {name: socket,          task: 13, base: 2200, keyword: 0x0000000000001000, keyword_symbol: GSCAR_KW_SOCKET}
 
 # Objects the model/schema vocabulary (car-actions.schema.json) carries beyond the 13 CAR objects:
 # promoted from the ATT&CK superset by docs/research/car-vocabulary-ruling.md. They have an action
 # enum but NO CAR field set in the pinned model, so no template can be derived for them without
 # inventing fields. Ranges are reserved so adopting them later never renumbers anything.
 promoted_objects:
-  - {name: group,         task: 23, base: 2300, keyword: 0x0000000000002000, keyword_symbol: GSCAR_KW_GROUP,         actions: [create, delete, enumerate, metadata, modify]}
-  - {name: scheduled_job, task: 24, base: 2400, keyword: 0x0000000000004000, keyword_symbol: GSCAR_KW_SCHEDULED_JOB, actions: [create, delete, metadata, modify]}
-  - {name: user_account,  task: 25, base: 2500, keyword: 0x0000000000008000, keyword_symbol: GSCAR_KW_USER_ACCOUNT,  actions: [create, delete, metadata, modify]}
+  - {name: group,         task: 14, base: 2300, keyword: 0x0000000000002000, keyword_symbol: GSCAR_KW_GROUP, actions: [create, delete, enumerate, metadata, modify]}
+  - {name: scheduled_job, task: 15, base: 2400, keyword: 0x0000000000004000, keyword_symbol: GSCAR_KW_SCHEDULED_JOB, actions: [create, delete, metadata, modify]}
+  - {name: user_account,  task: 16, base: 2500, keyword: 0x0000000000008000, keyword_symbol: GSCAR_KW_USER_ACCOUNT, actions: [create, delete, metadata, modify]}
 
 reserved_ranges:
-  - {range: [9000, 9099], task: 90, keyword: 0x0000800000000000, keyword_symbol: GSCAR_KW_SENSOR,
-     purpose: "sensor self-events (not CAR): service start/stop, configuration, provider enabled/silent, event drops, PPL availability — the 'going silent is a signal' hazard (brief §7)"}
+  - {range: [9000, 9099], task: 99, keyword: 0x0000800000000000, keyword_symbol: GSCAR_KW_SENSOR,
+     purpose: "sensor self-events (not CAR): service start/stop, configuration, provider enabled/silent, event drops, protected-provider availability — the 'going silent is a signal' hazard (brief §7)"}
 
-# One global Opcode per CAR action name. Pinned-CAR action names were assigned alphabetically from
-# 10; the five names only the superset adds (content, enumerate, execute, flow, metadata) follow.
+# One global Opcode per CAR action name (see the numbering rule above).
 actions:
   - {name: access,        opcode: 10, symbol: GSCAR_OP_ACCESS}
   - {name: acl_modify,    opcode: 11, symbol: GSCAR_OP_ACL_MODIFY}
@@ -117,7 +125,7 @@ actions:
   - {name: unlock,        opcode: 48, symbol: GSCAR_OP_UNLOCK}
   - {name: value_edit,    opcode: 49, symbol: GSCAR_OP_VALUE_EDIT}
   - {name: write,         opcode: 50, symbol: GSCAR_OP_WRITE}
-  # superset-only action names (ATT&CK data-component overlay; not in the pinned CAR submodule)
+  # action names only the ATT&CK data-component overlay adds
   - {name: content,       opcode: 51, symbol: GSCAR_OP_CONTENT}
   - {name: enumerate,     opcode: 52, symbol: GSCAR_OP_ENUMERATE}
   - {name: execute,       opcode: 53, symbol: GSCAR_OP_EXECUTE}
@@ -127,91 +135,89 @@ actions:
 # (object, action) → EventID. `provenance` is checked, not declared: car = the action is in the
 # pinned CAR submodule's data_model/<object>.yaml; superset = car-vocab adds it from ATT&CK.
 events:
-  # ---- process 1000–1099 (Task 10) ------------------------------------------------------------
-  - {id: 1001, object: process, action: create,        provenance: car}
-  - {id: 1002, object: process, action: terminate,     provenance: car}
-  - {id: 1003, object: process, action: access,        provenance: car}
-  - {id: 1050, object: process, action: execute,       provenance: superset}
-  - {id: 1051, object: process, action: metadata,      provenance: superset}
-  - {id: 1052, object: process, action: modify,        provenance: superset}
-  # ---- file 1100–1199 (Task 11) ---------------------------------------------------------------
-  - {id: 1101, object: file, action: create,           provenance: car}
-  - {id: 1102, object: file, action: delete,           provenance: car}
-  - {id: 1103, object: file, action: modify,           provenance: car}
-  - {id: 1104, object: file, action: timestomp,        provenance: car}
-  - {id: 1105, object: file, action: read,             provenance: car}
-  - {id: 1106, object: file, action: write,            provenance: car}
-  - {id: 1107, object: file, action: acl_modify,       provenance: car}
-  - {id: 1150, object: file, action: access,           provenance: superset}
-  - {id: 1151, object: file, action: content,          provenance: superset}
-  - {id: 1152, object: file, action: metadata,         provenance: superset}
-  # ---- flow 1200–1299 (Task 12) ---------------------------------------------------------------
-  - {id: 1201, object: flow, action: start,            provenance: car}
-  - {id: 1202, object: flow, action: end,              provenance: car}
-  - {id: 1203, object: flow, action: message,          provenance: car}
-  - {id: 1250, object: flow, action: content,          provenance: superset}
-  - {id: 1251, object: flow, action: create,           provenance: superset}
-  - {id: 1252, object: flow, action: flow,             provenance: superset}
-  # ---- registry 1300–1399 (Task 13) -----------------------------------------------------------
-  # (the brief's example "1302 edit" has no counterpart in the model: CAR defines value_edit and key_edit)
-  - {id: 1301, object: registry, action: add,          provenance: car}
-  - {id: 1302, object: registry, action: remove,       provenance: car}
-  - {id: 1303, object: registry, action: value_edit,   provenance: car}
-  - {id: 1304, object: registry, action: key_edit,     provenance: car}
-  - {id: 1350, object: registry, action: access,       provenance: superset}
-  - {id: 1351, object: registry, action: create,       provenance: superset}
-  - {id: 1352, object: registry, action: delete,       provenance: superset}
-  - {id: 1353, object: registry, action: modify,       provenance: superset}
-  # ---- module 1400–1499 (Task 14) -------------------------------------------------------------
-  - {id: 1401, object: module, action: load,           provenance: car}
-  - {id: 1402, object: module, action: unload,         provenance: car}
-  - {id: 1450, object: module, action: content,        provenance: superset}
-  - {id: 1451, object: module, action: metadata,       provenance: superset}
-  # ---- thread 1500–1599 (Task 15) -------------------------------------------------------------
-  # (1501 = remote_create honours the brief's example; CAR's own order would put create first — review item)
-  - {id: 1501, object: thread, action: remote_create,  provenance: car}
-  - {id: 1502, object: thread, action: create,         provenance: car}
-  - {id: 1503, object: thread, action: suspend,        provenance: car}
-  - {id: 1504, object: thread, action: terminate,      provenance: car}
-  # ---- driver 1600–1699 (Task 16) -------------------------------------------------------------
-  - {id: 1601, object: driver, action: load,           provenance: car}
-  - {id: 1602, object: driver, action: unload,         provenance: car}
-  - {id: 1650, object: driver, action: metadata,       provenance: superset}
-  # ---- service 1700–1799 (Task 17) ------------------------------------------------------------
-  - {id: 1701, object: service, action: create,        provenance: car}
-  - {id: 1702, object: service, action: delete,        provenance: car}
-  - {id: 1703, object: service, action: pause,         provenance: car}
-  - {id: 1704, object: service, action: start,         provenance: car}
-  - {id: 1705, object: service, action: stop,          provenance: car}
-  - {id: 1750, object: service, action: access,        provenance: superset}
-  - {id: 1751, object: service, action: enumerate,     provenance: superset}
-  - {id: 1752, object: service, action: metadata,      provenance: superset}
-  - {id: 1753, object: service, action: modify,        provenance: superset}
-  # ---- user_session 1800–1899 (Task 18) -------------------------------------------------------
-  - {id: 1801, object: user_session, action: lock,      provenance: car}
-  - {id: 1802, object: user_session, action: login,     provenance: car}
-  - {id: 1803, object: user_session, action: logout,    provenance: car}
-  - {id: 1804, object: user_session, action: reconnect, provenance: car}
-  - {id: 1805, object: user_session, action: unlock,    provenance: car}
-  - {id: 1850, object: user_session, action: create,    provenance: superset}
-  - {id: 1851, object: user_session, action: metadata,  provenance: superset}
-  - {id: 1852, object: user_session, action: terminate, provenance: superset}
-  # ---- authentication 1900–1999 (Task 19) -----------------------------------------------------
-  - {id: 1901, object: authentication, action: success, provenance: car}
-  - {id: 1902, object: authentication, action: failure, provenance: car}
-  - {id: 1903, object: authentication, action: error,   provenance: car}
-  # ---- socket 2000–2099 (Task 20) -------------------------------------------------------------
-  - {id: 2001, object: socket, action: bind,           provenance: car}
-  - {id: 2002, object: socket, action: listen,         provenance: car}
-  - {id: 2003, object: socket, action: close,          provenance: car}
-  # ---- http 2100–2199 (Task 21) ---------------------------------------------------------------
-  - {id: 2101, object: http, action: get,              provenance: car}
-  - {id: 2102, object: http, action: post,             provenance: car}
-  - {id: 2103, object: http, action: put,              provenance: car}
-  - {id: 2104, object: http, action: tunnel,           provenance: car}
-  # ---- email 2200–2299 (Task 22) --------------------------------------------------------------
-  - {id: 2201, object: email, action: deliver,         provenance: car}
-  - {id: 2202, object: email, action: block,           provenance: car}
-  - {id: 2203, object: email, action: redirect,        provenance: car}
-  - {id: 2204, object: email, action: quarantine,      provenance: car}
-  - {id: 2205, object: email, action: delete,          provenance: car}
+  # ---- process 1000–1099 (Task 1) -------------------------------------------------------------------------
+  - {id: 1001, object: process,        action: access,         provenance: car}
+  - {id: 1002, object: process,        action: create,         provenance: car}
+  - {id: 1003, object: process,        action: terminate,      provenance: car}
+  - {id: 1050, object: process,        action: execute,        provenance: superset}
+  - {id: 1051, object: process,        action: metadata,       provenance: superset}
+  - {id: 1052, object: process,        action: modify,         provenance: superset}
+  # ---- file 1100–1199 (Task 2) ----------------------------------------------------------------------------
+  - {id: 1101, object: file,           action: acl_modify,     provenance: car}
+  - {id: 1102, object: file,           action: create,         provenance: car}
+  - {id: 1103, object: file,           action: delete,         provenance: car}
+  - {id: 1104, object: file,           action: modify,         provenance: car}
+  - {id: 1105, object: file,           action: read,           provenance: car}
+  - {id: 1106, object: file,           action: timestomp,      provenance: car}
+  - {id: 1107, object: file,           action: write,          provenance: car}
+  - {id: 1150, object: file,           action: access,         provenance: superset}
+  - {id: 1151, object: file,           action: content,        provenance: superset}
+  - {id: 1152, object: file,           action: metadata,       provenance: superset}
+  # ---- flow 1200–1299 (Task 3) ----------------------------------------------------------------------------
+  - {id: 1201, object: flow,           action: end,            provenance: car}
+  - {id: 1202, object: flow,           action: message,        provenance: car}
+  - {id: 1203, object: flow,           action: start,          provenance: car}
+  - {id: 1250, object: flow,           action: content,        provenance: superset}
+  - {id: 1251, object: flow,           action: create,         provenance: superset}
+  - {id: 1252, object: flow,           action: flow,           provenance: superset}
+  # ---- registry 1300–1399 (Task 4) ------------------------------------------------------------------------
+  - {id: 1301, object: registry,       action: add,            provenance: car}
+  - {id: 1302, object: registry,       action: key_edit,       provenance: car}
+  - {id: 1303, object: registry,       action: remove,         provenance: car}
+  - {id: 1304, object: registry,       action: value_edit,     provenance: car}
+  - {id: 1350, object: registry,       action: access,         provenance: superset}
+  - {id: 1351, object: registry,       action: create,         provenance: superset}
+  - {id: 1352, object: registry,       action: delete,         provenance: superset}
+  - {id: 1353, object: registry,       action: modify,         provenance: superset}
+  # ---- module 1400–1499 (Task 5) --------------------------------------------------------------------------
+  - {id: 1401, object: module,         action: load,           provenance: car}
+  - {id: 1402, object: module,         action: unload,         provenance: car}
+  - {id: 1450, object: module,         action: content,        provenance: superset}
+  - {id: 1451, object: module,         action: metadata,       provenance: superset}
+  # ---- thread 1500–1599 (Task 6) --------------------------------------------------------------------------
+  - {id: 1501, object: thread,         action: create,         provenance: car}
+  - {id: 1502, object: thread,         action: remote_create,  provenance: car}
+  - {id: 1503, object: thread,         action: suspend,        provenance: car}
+  - {id: 1504, object: thread,         action: terminate,      provenance: car}
+  # ---- driver 1600–1699 (Task 7) --------------------------------------------------------------------------
+  - {id: 1601, object: driver,         action: load,           provenance: car}
+  - {id: 1602, object: driver,         action: unload,         provenance: car}
+  - {id: 1650, object: driver,         action: metadata,       provenance: superset}
+  # ---- user_session 1700–1799 (Task 8) --------------------------------------------------------------------
+  - {id: 1701, object: user_session,   action: lock,           provenance: car}
+  - {id: 1702, object: user_session,   action: login,          provenance: car}
+  - {id: 1703, object: user_session,   action: logout,         provenance: car}
+  - {id: 1704, object: user_session,   action: reconnect,      provenance: car}
+  - {id: 1705, object: user_session,   action: unlock,         provenance: car}
+  - {id: 1750, object: user_session,   action: create,         provenance: superset}
+  - {id: 1751, object: user_session,   action: metadata,       provenance: superset}
+  - {id: 1752, object: user_session,   action: terminate,      provenance: superset}
+  # ---- service 1800–1899 (Task 9) -------------------------------------------------------------------------
+  - {id: 1801, object: service,        action: create,         provenance: car}
+  - {id: 1802, object: service,        action: delete,         provenance: car}
+  - {id: 1803, object: service,        action: pause,          provenance: car}
+  - {id: 1804, object: service,        action: start,          provenance: car}
+  - {id: 1805, object: service,        action: stop,           provenance: car}
+  - {id: 1850, object: service,        action: access,         provenance: superset}
+  - {id: 1851, object: service,        action: enumerate,      provenance: superset}
+  - {id: 1852, object: service,        action: metadata,       provenance: superset}
+  - {id: 1853, object: service,        action: modify,         provenance: superset}
+  # ---- authentication 1900–1999 (Task 10) ------------------------------------------------------------------
+  - {id: 1901, object: authentication, action: error,          provenance: car}
+  - {id: 1902, object: authentication, action: failure,        provenance: car}
+  - {id: 1903, object: authentication, action: success,        provenance: car}
+  # ---- email 2000–2099 (Task 11) ---------------------------------------------------------------------------
+  - {id: 2001, object: email,          action: block,          provenance: car}
+  - {id: 2002, object: email,          action: delete,         provenance: car}
+  - {id: 2003, object: email,          action: deliver,        provenance: car}
+  - {id: 2004, object: email,          action: quarantine,     provenance: car}
+  - {id: 2005, object: email,          action: redirect,       provenance: car}
+  # ---- http 2100–2199 (Task 12) ----------------------------------------------------------------------------
+  - {id: 2101, object: http,           action: get,            provenance: car}
+  - {id: 2102, object: http,           action: post,           provenance: car}
+  - {id: 2103, object: http,           action: put,            provenance: car}
+  - {id: 2104, object: http,           action: tunnel,         provenance: car}
+  # ---- socket 2200–2299 (Task 13) --------------------------------------------------------------------------
+  - {id: 2201, object: socket,         action: bind,           provenance: car}
+  - {id: 2202, object: socket,         action: close,          provenance: car}
+  - {id: 2203, object: socket,         action: listen,         provenance: car}

@@ -1,115 +1,119 @@
-# model/templates.yaml — the typed templates: one per CAR object, reused across that object's actions.
+# model/templates.yaml — the templates: one per CAR object, reused across that object's actions.
 #
 # The field LIST per object is not declared here — it is read from the pinned model
-# (model/sources/car/data_model/<object>.yaml) so it cannot drift. This file adds the one thing the
-# CAR data model does not carry: a wire TYPE per field. Every field not listed under an object is a
-# `string` (win:UnicodeString); only the fields that deviate are listed, each with its basis.
+# (model/sources/car/data_model/<object>.yaml) so it cannot drift. An event carries exactly the CAR
+# object (Task), the action (Opcode) and the object's complete property set — nothing else
+# (decision D4, 2026-10-24). Observed time and host come from the event's own System section
+# (TimeCreated, Computer) and from the CAR fqdn/hostname properties where the model has them.
 #
-# Typing precedents: CAR descriptions/examples; the mission brief §6 (IPs and hashes as strings —
-# ETW has no IP type); and, as a cross-check, the type decisions Byakugan's CAR→ECS projection made
-# for the same fields (model/projection/ecs_types.yml at the Byakugan pin: date/long/ip/boolean,
-# keyword otherwise). The generator validates that every listed field exists in the pinned model and
-# that every rule referenced is defined.
+# Every field is `win:UnicodeString`. The brief (§2) requires "empty = not observed"; an ETW integer,
+# boolean or FILETIME cannot be empty (0 / false / 1601-01-01 are values), and the model itself relies
+# on the empty state (file.signature_valid: "empty if file is not signed"). A string can. So the type
+# is uniform and what this file adds is the FORMAT the writer must use for a populated value — the
+# CAR description/example decides it. Fields not listed under an object are `text`.
 
-# Provider-level fields written at the head of EVERY template. They are sensor envelope, not CAR
-# properties, and are rendered separately in the table. (Brief §6: carry the observed event time as
-# an explicit field; stamp host identity on every event.)
-envelope:
-  - name: UtcTime
-    rule: utc_time
-    description: The instant the underlying activity was observed, UTC — the source telemetry's own timestamp (ETW stamps TimeCreated separately when the event is logged).
-  - name: Host
-    rule: string
-    description: Host identity of the observing machine — the FQDN when domain-joined, else the computer name. Present even on objects whose CAR property set has no fqdn/hostname.
-  - name: SourceProvider
-    rule: string
-    description: Which live telemetry supplied this record (provider and event id). Lets a consumer judge how each field was populated; never inferred.
+type: "win:UnicodeString"
 
-# How a rule becomes ETW template data.
-rules:
-  string:      {in: "win:UnicodeString", basis: "default — names, paths, hashes (hex), SIDs, IPs (brief §6), free text; the writer truncates long text to keep a record well under the ~30 KB render limit"}
-  pid:         {in: "win:UInt32", out: "win:PID",       basis: "a process id (decimal in CAR)"}
-  tid:         {in: "win:UInt32", out: "win:TID",       basis: "a thread id"}
-  port:        {in: "win:UInt16",                       basis: "a TCP/UDP port; plain unsignedShort (win:Port would expect network byte order)"}
-  bytes:       {in: "win:UInt64",                       basis: "a byte count"}
-  count:       {in: "win:UInt64",                       basis: "a packet count"}
-  utc_time:    {in: "win:FILETIME",                     basis: "an absolute UTC timestamp; rendered as dateTime"}
-  bool:        {in: "win:Boolean",                      basis: "a boolean indicator"}
-  address:     {in: "win:UInt64", out: "win:HexInt64",  basis: "a virtual address (CAR examples are 0x-prefixed hex); 64-bit regardless of process bitness"}
-  mask:        {in: "win:UInt32", out: "win:HexInt32",  basis: "an access mask (CAR example 0x40)"}
-  guid:        {in: "win:GUID",                         basis: "a GUID identifier (CAR example '{f81d4fae-…}'); minted by the sensor Sysmon-style when the source telemetry has none"}
-  luid:        {in: "win:UInt64", out: "win:HexInt64",  basis: "a logon id — a 64-bit LUID (CAR example 0xf61f3)"}
-  duration_ms: {in: "win:UInt32",                       basis: "a duration in milliseconds (CAR example '12ms')"}
-  status_code: {in: "win:UInt16",                       basis: "an HTTP status code"}
+formats:
+  text:     {basis: "as observed — names, paths, '<DOMAIN>\\<USER>', free text; the writer truncates long text so a record stays well under the ~30 KB render limit"}
+  int:      {pattern: "^[0-9]+$",                       basis: "a decimal integer — CAR: 'represented in decimal notation' (ids, ports, counts, byte sizes, status codes)"}
+  int_ms:   {pattern: "^[0-9]+$",                       basis: "a duration in whole milliseconds (CAR example '12ms')"}
+  hex:      {pattern: "^[0-9a-f]+$",                    basis: "lower-case hex digits, no prefix — CAR: hashes 'in hex notation, without the 0x prefix'"}
+  hexaddr:  {pattern: "^0x[0-9A-Fa-f]+$",               basis: "0x-prefixed hex — CAR examples: addresses 0xFFFFF8000405F000, access_level 0x40, login_id 0xf61f3"}
+  utc_time: {pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$", basis: "a UTC instant as ISO 8601 'YYYY-MM-DDTHH:MM:SS.fffZ' — CAR: 'in UTC and including the date' (the examples' locale display form is not used)"}
+  bool:     {pattern: "^(true|false)$",                 basis: "'true' or 'false' (CAR examples); empty when not observed — the model's own tri-state"}
+  guid:     {pattern: "^\\{[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\\}$", basis: "a GUID in registry format with braces (CAR example) — written only when the source telemetry supplies one, never minted"}
+  ip:       {basis: "an IP address as text: IPv4 dotted-quad or RFC 5952 IPv6 (brief §6: no native IP type)"}
 
 objects:
   authentication:
-    response_time: duration_ms
+    response_time: int_ms
   driver:
-    base_address: address
-    pid: pid
+    base_address: hexaddr
+    md5_hash: hex
+    sha1_hash: hex
+    sha256_hash: hex
+    pid: int
     signature_valid: bool
   email:
-    attachment_size: bytes      # CAR example is loose text ('567 Kb'); typed as bytes, as Byakugan's projection does
-    dest_port: port
+    attachment_size: int        # bytes; CAR's example is loose text ('567 Kb')
+    dest_ip: ip
+    dest_port: int
     date: utc_time              # the SMTP Date header, parsed to UTC
-    src_port: port
+    src_ip: ip
+    src_port: int
   file:
     creation_time: utc_time
-    pid: pid
-    ppid: pid
+    md5_hash: hex
+    sha1_hash: hex
+    sha256_hash: hex
+    pid: int
+    ppid: int
     previous_creation_time: utc_time
     signature_valid: bool
   flow:
-    dest_port: port
-    src_port: port
+    dest_ip: ip
+    dest_port: int
+    src_ip: ip
+    src_port: int
     start_time: utc_time
     end_time: utc_time
-    packet_count: count
-    pid: pid
-    ppid: pid
-    in_bytes: bytes
-    out_bytes: bytes
+    packet_count: int
+    pid: int
+    ppid: int
+    in_bytes: int
+    out_bytes: int
   http:
-    request_body_bytes: bytes
-    response_body_bytes: bytes
-    response_status_code: status_code
+    request_body_bytes: int
+    requester_ip_address: ip
+    response_body_bytes: int
+    response_status_code: int
   module:
-    base_address: address
-    pid: pid
-    tid: tid
+    base_address: hexaddr
+    md5_hash: hex
+    sha1_hash: hex
+    sha256_hash: hex
+    pid: int
+    tid: int
     signature_valid: bool
   process:
-    pid: pid
-    ppid: pid
-    access_level: mask
+    md5_hash: hex
+    sha1_hash: hex
+    sha256_hash: hex
+    pid: int
+    ppid: int
+    access_level: hexaddr
     guid: guid
     parent_guid: guid
     signature_valid: bool
     target_guid: guid
-    target_pid: pid
+    target_pid: int
   registry:
-    pid: pid
+    pid: int
   service:
-    pid: pid
-    ppid: pid
+    pid: int
+    ppid: int
   socket:
-    pid: pid
+    pid: int
     success: bool
-    local_port: port
-    remote_port: port
+    local_address: ip
+    local_port: int
+    remote_port: int
+    remote_address: ip
   thread:
-    src_pid: pid
-    src_tid: tid
-    tgt_pid: pid
-    tgt_tid: tid
-    stack_base: address
-    stack_limit: address
-    start_address: address
-    user_stack_base: address
-    user_stack_limit: address
+    src_pid: int
+    src_tid: int
+    tgt_pid: int
+    tgt_tid: int
+    stack_base: hexaddr
+    stack_limit: hexaddr
+    start_address: hexaddr
+    user_stack_base: hexaddr
+    user_stack_limit: hexaddr
   user_session:
-    dest_port: port
-    login_id: luid
-    src_port: port
+    dest_ip: ip
+    dest_port: int
+    login_id: hexaddr
+    src_ip: ip
+    src_port: int
     login_successful: bool

@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Get-Sybers MITRE CAR sensor: a Windows service (or console process) that consumes live ETW
+    telemetry in real time and writes each observed CAR (object, action) to the
+    Get-Sybers-MitreCAR/Operational channel with the object's full property set.
+
+    .NET Framework 4.8 on purpose: it is in-box on every supported Windows, so deployment is a copy
+    plus `sc create`; System.Diagnostics.Eventing.EventProvider (the manifest-event writer) and
+    ServiceBase are in-box too. CI builds it on windows-latest; nothing is compiled at install time.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>10</LangVersion>
+    <Nullable>disable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <AssemblyName>GetSybersMitreCar.Writer</AssemblyName>
+    <RootNamespace>GetSybersMitreCar.Writer</RootNamespace>
+    <Product>Get-Sybers MITRE CAR Sensor</Product>
+    <Description>Real-time ETW consumer writing MITRE CAR events to the Get-Sybers-MitreCAR/Operational channel</Description>
+    <Version>0.1.0</Version>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Microsoft's ETW consumer library (MIT): real-time sessions, kernel provider control, TDH decoding. -->
+    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.1.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.ServiceProcess" />
+  </ItemGroup>
+
+</Project>
