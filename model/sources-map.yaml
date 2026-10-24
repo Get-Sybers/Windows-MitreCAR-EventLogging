@@ -1,13 +1,13 @@
-# model/sources-map.yaml — the provider→CAR map: which live Windows telemetry supplies each (object, action)
+# model/sources-map.yaml - the provider->CAR map: which live Windows telemetry supplies each (object, action)
 # and each property. Deliverable 5 of the brief, as data. The C# writer implements exactly this; the unit
 # tests check every pair and property named here exists in the model.
 #
 # status: implemented (in the writer today) | planned (source identified, not yet consumed) |
-#         none (no in-box live source — the EventID exists in the manifest, nothing populates it)
+#         none (no in-box live source - the EventID exists in the manifest, nothing populates it)
 # property sources: "event <Field>" = the kernel event's payload; "live <what>" = read from the running
-# system at the instant the event is handled; "sensor" = the sensor's own earlier observation of the same
-# object (the process table it builds from process starts); "host" = the observing machine.
-# Properties not listed are written empty.
+# system at the instant the event is handled (a token, a PEB, a file on disk, a registry value); "sensor" =
+# the sensor's own earlier observation (its process/module/flow tables); "host" = the observing machine.
+# Properties not listed are written empty (not observed). No value is inferred and no name is resolved by DNS.
 sources:
   kernel:
     name: NT kernel logger (system trace), consumed in real time through Microsoft.Diagnostics.Tracing.TraceEvent
@@ -36,20 +36,24 @@ pairs:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: event KernelImageFileName (NT path -> drive path)
-    user: sensor process table / live token (TokenUser -> account name)
     ppid: event ParentID
     exe: event ImageFileName
+    image_path: event KernelImageFileName (NT path -> drive path), else live QueryFullProcessImageName
     command_line: event CommandLine
-    sid: live token
+    sid: event payload TOKEN_USER SID, else live token
+    uid: same SID as sid
+    user: live token account name, else LookupAccountSid(sid)
     integrity_level: 'live token (TokenIntegrityLevel: low/medium/high/system)'
-    parent_image_path: live QueryFullProcessImageName(ppid)
+    current_working_directory: live read of the process PEB (RTL_USER_PROCESS_PARAMETERS.CurrentDirectory)
+    env_vars: live read of the process PEB environment block (off with --no-env-vars)
+    md5_hash: live hash of image_path
+    sha1_hash: live hash of image_path
+    sha256_hash: live hash of image_path
+    signer: live embedded Authenticode subject of image_path (catalog-signed files have none)
+    signature_valid: live WinVerifyTrust of image_path
+    parent_image_path: sensor process table, else live QueryFullProcessImageName(ppid)
     parent_exe: basename of parent_image_path
-    md5_hash: live file hash
-    sha1_hash: live file hash
-    sha256_hash: live file hash
-    signer: live embedded Authenticode subject (catalog-signed files have none)
-    signature_valid: live WinVerifyTrust
+    parent_command_line: sensor process table, else live PEB read of the parent
 - object: process
   action: terminate
   id: 1003
@@ -60,11 +64,24 @@ pairs:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: event KernelImageFileName
-    user: sensor process table / live token (TokenUser -> account name)
     ppid: event ParentID
     exe: event ImageFileName
     command_line: event CommandLine
+    image_path: event KernelImageFileName, else sensor process table
+    sid: event payload TOKEN_USER SID, else sensor process table
+    uid: same SID as sid
+    user: sensor process table, else LookupAccountSid(sid)
+    md5_hash: hash of image_path
+    sha1_hash: hash of image_path
+    sha256_hash: hash of image_path
+    signer: embedded Authenticode subject of image_path
+    signature_valid: WinVerifyTrust of image_path
+    integrity_level: sensor process table (token label seen at this process's start)
+    parent_image_path: sensor process table (seen at start)
+    parent_exe: basename of parent_image_path
+    parent_command_line: sensor process table (seen at start)
+    current_working_directory: sensor process table (the directory the process started in)
+    env_vars: sensor process table (the environment the process started with)
 - object: process
   action: access
   id: 1001
@@ -87,75 +104,190 @@ pairs:
   id: 1102
   status: implemented
   source: kernel
-  trigger: FileIO/Create with CreateDisposition Supersede, Create or OverwriteIf (a file is created or replaced)
-  note: OpenIf opens an existing file in almost every call and is not counted as a creation
+  trigger: FileIO/Create whose completion (FileIO/OperationEnd) reports FILE_CREATED, FILE_SUPERSEDED or FILE_OVERWRITTEN
+  note: the kernel's own create result, not the requested disposition, decides a real creation; an open of an existing file is not counted
   properties:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
-    user: sensor process table / live token (TokenUser -> account name)
+    ppid: sensor process table (parent of the acting process)
+    image_path: sensor process table (acting process image), else live QueryFullProcessImageName
+    user: sensor process table / live token of the acting process
+    uid: acting process token SID
+    md5_hash: hash of image_path (CAR defines the file hashes on the acting process image)
+    sha1_hash: hash of image_path
+    sha256_hash: hash of image_path
+    signer: embedded Authenticode subject of image_path
+    signature_valid: WinVerifyTrust of image_path
+    company: CompanyName in the version resource of image_path
     file_path: event FileName (NT path -> drive path)
     file_name: basename of file_path
     extension: suffix of file_path
-    uid: live process token SID
-    creation_time: live file creation time
-    owner: live file owner account
-    owner_uid: live file owner SID
+    creation_time: live creation time of file_path on disk
+    owner: live owner account of file_path
+    owner_uid: live owner SID of file_path
+    group: live primary group of file_path (security descriptor)
+    gid: live primary group SID of file_path
+    mode: live DACL of file_path in SDDL form
+    link_target: live reparse target of file_path (symlink or junction), -> drive path
+    mime_type: HKLM\Software\Classes\<extension> Content Type
 - object: file
   action: delete
   id: 1103
   status: implemented
   source: kernel
   trigger: FileIO/Delete (FileDispositionInformation)
-  properties: &id001
+  properties:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
-    user: sensor process table / live token (TokenUser -> account name)
+    ppid: sensor process table (parent of the acting process)
+    image_path: sensor process table (acting process image), else live QueryFullProcessImageName
+    user: sensor process table / live token of the acting process
+    uid: acting process token SID
+    md5_hash: hash of image_path (CAR defines the file hashes on the acting process image)
+    sha1_hash: hash of image_path
+    sha256_hash: hash of image_path
+    signer: embedded Authenticode subject of image_path
+    signature_valid: WinVerifyTrust of image_path
+    company: CompanyName in the version resource of image_path
     file_path: event FileName (NT path -> drive path)
     file_name: basename of file_path
     extension: suffix of file_path
-    uid: live process token SID
+    creation_time: live creation time of file_path on disk
+    owner: live owner account of file_path
+    owner_uid: live owner SID of file_path
+    group: live primary group of file_path (security descriptor)
+    gid: live primary group SID of file_path
+    mode: live DACL of file_path in SDDL form
+    link_target: live reparse target of file_path (symlink or junction), -> drive path
+    mime_type: HKLM\Software\Classes\<extension> Content Type
 - object: file
   action: modify
   id: 1104
   status: implemented
   source: kernel
-  trigger: FileIO/Rename; FileIO/SetInfo with any class other than FileBasicInformation
-  properties: *id001
+  trigger: FileIO/Rename; FileIO/SetInfo (rename, link, allocation, end-of-file, valid-data-length, short-name); a FileBasicInformation set that changes no timestamp
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    ppid: sensor process table (parent of the acting process)
+    image_path: sensor process table (acting process image), else live QueryFullProcessImageName
+    user: sensor process table / live token of the acting process
+    uid: acting process token SID
+    md5_hash: hash of image_path (CAR defines the file hashes on the acting process image)
+    sha1_hash: hash of image_path
+    sha256_hash: hash of image_path
+    signer: embedded Authenticode subject of image_path
+    signature_valid: WinVerifyTrust of image_path
+    company: CompanyName in the version resource of image_path
+    file_path: event FileName (NT path -> drive path)
+    file_name: basename of file_path
+    extension: suffix of file_path
+    creation_time: live creation time of file_path on disk
+    owner: live owner account of file_path
+    owner_uid: live owner SID of file_path
+    group: live primary group of file_path (security descriptor)
+    gid: live primary group SID of file_path
+    mode: live DACL of file_path in SDDL form
+    link_target: live reparse target of file_path (symlink or junction), -> drive path
+    mime_type: HKLM\Software\Classes\<extension> Content Type
 - object: file
   action: read
   id: 1105
   status: implemented
   source: kernel
   trigger: 'FileIO/Read (off by default: --file-reads)'
-  properties: *id001
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    ppid: sensor process table (parent of the acting process)
+    image_path: sensor process table (acting process image), else live QueryFullProcessImageName
+    user: sensor process table / live token of the acting process
+    uid: acting process token SID
+    md5_hash: hash of image_path (CAR defines the file hashes on the acting process image)
+    sha1_hash: hash of image_path
+    sha256_hash: hash of image_path
+    signer: embedded Authenticode subject of image_path
+    signature_valid: WinVerifyTrust of image_path
+    company: CompanyName in the version resource of image_path
+    file_path: event FileName (NT path -> drive path)
+    file_name: basename of file_path
+    extension: suffix of file_path
+    creation_time: live creation time of file_path on disk
+    owner: live owner account of file_path
+    owner_uid: live owner SID of file_path
+    group: live primary group of file_path (security descriptor)
+    gid: live primary group SID of file_path
+    mode: live DACL of file_path in SDDL form
+    link_target: live reparse target of file_path (symlink or junction), -> drive path
+    mime_type: HKLM\Software\Classes\<extension> Content Type
 - object: file
   action: timestomp
   id: 1106
   status: implemented
   source: kernel
-  trigger: FileIO/SetInfo with FileBasicInformation (timestamps and attributes)
+  trigger: FileIO/SetInfo with FileBasicInformation whose completion shows a file time changed
+  note: previous_creation_time is the file's creation time read when the set-information request started
   properties:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
-    user: sensor process table / live token (TokenUser -> account name)
+    ppid: sensor process table (parent of the acting process)
+    image_path: sensor process table (acting process image), else live QueryFullProcessImageName
+    user: sensor process table / live token of the acting process
+    uid: acting process token SID
+    md5_hash: hash of image_path (CAR defines the file hashes on the acting process image)
+    sha1_hash: hash of image_path
+    sha256_hash: hash of image_path
+    signer: embedded Authenticode subject of image_path
+    signature_valid: WinVerifyTrust of image_path
+    company: CompanyName in the version resource of image_path
     file_path: event FileName (NT path -> drive path)
     file_name: basename of file_path
     extension: suffix of file_path
-    uid: live process token SID
-    creation_time: live file creation time after the change
+    creation_time: live creation time of file_path on disk
+    owner: live owner account of file_path
+    owner_uid: live owner SID of file_path
+    group: live primary group of file_path (security descriptor)
+    gid: live primary group SID of file_path
+    mode: live DACL of file_path in SDDL form
+    link_target: live reparse target of file_path (symlink or junction), -> drive path
+    mime_type: HKLM\Software\Classes\<extension> Content Type
+    previous_creation_time: creation time of file_path read before the set-information completes
 - object: file
   action: write
   id: 1107
   status: implemented
   source: kernel
   trigger: FileIO/Write
-  properties: *id001
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    ppid: sensor process table (parent of the acting process)
+    image_path: sensor process table (acting process image), else live QueryFullProcessImageName
+    user: sensor process table / live token of the acting process
+    uid: acting process token SID
+    md5_hash: hash of image_path (CAR defines the file hashes on the acting process image)
+    sha1_hash: hash of image_path
+    sha256_hash: hash of image_path
+    signer: embedded Authenticode subject of image_path
+    signature_valid: WinVerifyTrust of image_path
+    company: CompanyName in the version resource of image_path
+    file_path: event FileName (NT path -> drive path)
+    file_name: basename of file_path
+    extension: suffix of file_path
+    creation_time: live creation time of file_path on disk
+    owner: live owner account of file_path
+    owner_uid: live owner SID of file_path
+    group: live primary group of file_path (security descriptor)
+    gid: live primary group SID of file_path
+    mode: live DACL of file_path in SDDL form
+    link_target: live reparse target of file_path (symlink or junction), -> drive path
+    mime_type: HKLM\Software\Classes\<extension> Content Type
 - object: file
   action: acl_modify
   id: 1101
@@ -184,15 +316,20 @@ pairs:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
-    user: sensor process table / live token (TokenUser -> account name)
+    ppid: sensor process table (parent of the owning process)
+    image_path: sensor process table (owning process image), else live QueryFullProcessImageName
     exe: basename of image_path
+    user: sensor process table / live token of the owning process
+    uid: owning process token SID
     src_ip: event saddr
     src_port: event sport
     dest_ip: event daddr
     dest_port: event dport
-    uid: live process token SID
     transport_protocol: tcp
+    src_hostname: host, when src_ip is one of this host's own addresses (no DNS)
+    src_fqdn: host fqdn, when src_ip is local
+    dest_hostname: host, when dest_ip is one of this host's own addresses (no DNS)
+    dest_fqdn: host fqdn, when dest_ip is local
     network_direction: outbound for Connect, inbound for Accept
     start_time: event timestamp (UTC, ISO 8601)
 - object: flow
@@ -205,16 +342,26 @@ pairs:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
-    user: sensor process table / live token (TokenUser -> account name)
+    ppid: sensor process table (parent of the owning process)
+    image_path: sensor process table (owning process image), else live QueryFullProcessImageName
     exe: basename of image_path
+    user: sensor process table / live token of the owning process
+    uid: owning process token SID
     src_ip: event saddr
     src_port: event sport
     dest_ip: event daddr
     dest_port: event dport
-    uid: live process token SID
     transport_protocol: tcp
+    src_hostname: host, when src_ip is one of this host's own addresses (no DNS)
+    src_fqdn: host fqdn, when src_ip is local
+    dest_hostname: host, when dest_ip is one of this host's own addresses (no DNS)
+    dest_fqdn: host fqdn, when dest_ip is local
+    network_direction: sensor flow table (direction seen at start)
+    start_time: sensor flow table (time the connect/accept was seen)
     end_time: event timestamp (UTC, ISO 8601)
+    in_bytes: bytes received on this flow, counted from the kernel send/recv events since its start
+    out_bytes: bytes sent on this flow, counted since its start
+    packet_count: send + receive events counted on this flow since its start
 - object: flow
   action: message
   id: 1202
@@ -225,15 +372,22 @@ pairs:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
-    user: sensor process table / live token (TokenUser -> account name)
+    ppid: sensor process table (parent of the owning process)
+    image_path: sensor process table (owning process image), else live QueryFullProcessImageName
     exe: basename of image_path
+    user: sensor process table / live token of the owning process
+    uid: owning process token SID
     src_ip: event saddr
     src_port: event sport
     dest_ip: event daddr
     dest_port: event dport
-    uid: live process token SID
     transport_protocol: tcp or udp
+    src_hostname: host, when src_ip is one of this host's own addresses (no DNS)
+    src_fqdn: host fqdn, when src_ip is local
+    dest_hostname: host, when dest_ip is one of this host's own addresses (no DNS)
+    dest_fqdn: host fqdn, when dest_ip is local
+    network_direction: sensor flow table (tcp flows seen at start)
+    start_time: sensor flow table (tcp flows seen at start)
     out_bytes: event size on send
     in_bytes: event size on receive
 - object: flow
@@ -260,8 +414,8 @@ pairs:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
-    user: sensor process table / live token (TokenUser -> account name)
+    image_path: sensor process table (acting process image), else live QueryFullProcessImageName
+    user: sensor process table / live token of the acting process
     key: event KeyName (\REGISTRY\MACHINE -> HKLM, \REGISTRY\USER -> HKU)
     hive: root of KeyName (HKEY_LOCAL_MACHINE, HKEY_USERS)
 - object: registry
@@ -274,11 +428,11 @@ pairs:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
-    user: sensor process table / live token (TokenUser -> account name)
-    key: event KeyName
-    value: event ValueName (DeleteValue)
-    hive: root of KeyName
+    image_path: sensor process table (acting process image), else live QueryFullProcessImageName
+    user: sensor process table / live token of the acting process
+    key: event KeyName (\REGISTRY\MACHINE -> HKLM, \REGISTRY\USER -> HKU)
+    hive: root of KeyName (HKEY_LOCAL_MACHINE, HKEY_USERS)
+    value: event ValueName (DeleteValue; empty for a key delete)
 - object: registry
   action: value_edit
   id: 1304
@@ -289,11 +443,11 @@ pairs:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
-    user: sensor process table / live token (TokenUser -> account name)
-    key: event KeyName
+    image_path: sensor process table (acting process image), else live QueryFullProcessImageName
+    user: sensor process table / live token of the acting process
+    key: event KeyName (\REGISTRY\MACHINE -> HKLM, \REGISTRY\USER -> HKU)
+    hive: root of KeyName (HKEY_LOCAL_MACHINE, HKEY_USERS)
     value: event ValueName
-    hive: root of KeyName
     data: live read of the value after the set
     type: live value type (REG_SZ, REG_DWORD, ...)
     new_content: same as data
@@ -312,11 +466,13 @@ pairs:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
-    user: sensor process table / live token (TokenUser -> account name)
-    key: event KeyName
-    value: event ValueName
-    hive: root of KeyName
+    image_path: sensor process table (acting process image), else live QueryFullProcessImageName
+    user: sensor process table / live token of the acting process
+    key: event KeyName (\REGISTRY\MACHINE -> HKLM, \REGISTRY\USER -> HKU)
+    hive: root of KeyName (HKEY_LOCAL_MACHINE, HKEY_USERS)
+    value: event ValueName (empty for a key open)
+    data: live read of the value (QueryValue only)
+    type: live value type (QueryValue only)
 - object: registry
   action: create
   id: 1351
@@ -342,31 +498,37 @@ pairs:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
+    image_path: sensor process table (hosting process image), else live QueryFullProcessImageName
     module_path: event FileName (-> drive path)
     module_name: basename of module_path
     base_address: event ImageBase (0x hex)
     tid: event ThreadID
-    md5_hash: live file hash
-    sha1_hash: live file hash
-    sha256_hash: live file hash
-    signer: live embedded Authenticode subject (catalog-signed files have none)
-    signature_valid: live WinVerifyTrust
+    md5_hash: hash of module_path
+    sha1_hash: hash of module_path
+    sha256_hash: hash of module_path
+    signer: embedded Authenticode subject of module_path (catalog-signed files have none)
+    signature_valid: WinVerifyTrust of module_path
 - object: module
   action: unload
   id: 1402
   status: implemented
   source: kernel
   trigger: Image/Unload in a user-mode process
+  note: the module file is still on disk at unload, so it is hashed and signature-checked like load
   properties:
     hostname: host
     fqdn: host (when domain-joined)
     pid: event ProcessID
-    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
-    module_path: event FileName
+    image_path: sensor process table (hosting process image), else live QueryFullProcessImageName
+    module_path: event FileName (-> drive path)
     module_name: basename of module_path
-    base_address: event ImageBase
+    base_address: event ImageBase (0x hex)
     tid: event ThreadID
+    md5_hash: hash of module_path
+    sha1_hash: hash of module_path
+    sha256_hash: hash of module_path
+    signer: embedded Authenticode subject of module_path (catalog-signed files have none)
+    signature_valid: WinVerifyTrust of module_path
 - object: module
   action: content
   id: 1450
@@ -392,15 +554,33 @@ pairs:
     user_stack_base: event UserStackBase
     user_stack_limit: event UserStackLimit
     start_address: event Win32StartAddr
+    start_module: sensor module map (module whose loaded range covers start_address)
+    start_module_name: basename of start_module
+    start_function: export of start_module whose address is exactly start_address (no nearest-symbol guessing)
     user: sensor process table / live token of src_pid
-    uid: live token SID of src_pid
+    uid: token SID of src_pid
 - object: thread
   action: remote_create
   id: 1502
   status: implemented
   source: kernel
   trigger: Thread/Start whose creating process differs from the owning process (always on)
-  properties: as thread/create
+  properties:
+    hostname: host
+    src_pid: event ParentProcessID
+    src_tid: event ParentThreadID
+    tgt_pid: event ProcessID
+    tgt_tid: event ThreadID
+    stack_base: event StackBase
+    stack_limit: event StackLimit
+    user_stack_base: event UserStackBase
+    user_stack_limit: event UserStackLimit
+    start_address: event Win32StartAddr
+    start_module: sensor module map (module whose loaded range covers start_address)
+    start_module_name: basename of start_module
+    start_function: export of start_module whose address is exactly start_address (no nearest-symbol guessing)
+    user: sensor process table / live token of src_pid
+    uid: token SID of src_pid
 - object: thread
   action: terminate
   id: 1504
@@ -416,6 +596,11 @@ pairs:
     user_stack_base: event UserStackBase
     user_stack_limit: event UserStackLimit
     start_address: event Win32StartAddr
+    start_module: sensor module map (module whose loaded range covers start_address)
+    start_module_name: basename of start_module
+    start_function: export of start_module whose address is exactly start_address (no nearest-symbol guessing)
+    user: sensor process table / live token of tgt_pid (the owning process)
+    uid: token SID of tgt_pid (the owning process)
 - object: thread
   action: suspend
   id: 1503
@@ -434,24 +619,30 @@ pairs:
     module_name: basename of image_path
     base_address: event ImageBase (0x hex)
     pid: event ProcessID
-    md5_hash: live file hash
-    sha1_hash: live file hash
-    sha256_hash: live file hash
-    signer: live embedded Authenticode subject (catalog-signed files have none)
-    signature_valid: live WinVerifyTrust
+    md5_hash: hash of image_path
+    sha1_hash: hash of image_path
+    sha256_hash: hash of image_path
+    signer: embedded Authenticode subject of image_path (catalog-signed drivers have none)
+    signature_valid: WinVerifyTrust of image_path
 - object: driver
   action: unload
   id: 1602
   status: implemented
   source: kernel
   trigger: Image/Unload with the kernel's process id
+  note: the driver file is still on disk at unload, so it is hashed and signature-checked like load
   properties:
     hostname: host
     fqdn: host
-    image_path: event FileName
+    image_path: event FileName (-> drive path)
     module_name: basename of image_path
-    base_address: event ImageBase
+    base_address: event ImageBase (0x hex)
     pid: event ProcessID
+    md5_hash: hash of image_path
+    sha1_hash: hash of image_path
+    sha256_hash: hash of image_path
+    signer: embedded Authenticode subject of image_path (catalog-signed drivers have none)
+    signature_valid: WinVerifyTrust of image_path
 - object: driver
   action: metadata
   id: 1650

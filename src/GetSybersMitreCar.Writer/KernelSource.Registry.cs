@@ -17,6 +17,16 @@ namespace GetSybersMitreCar.Writer
             return p;
         }
 
+        /// <summary>data / type of the named value as it is now (the kernel event carries neither).</summary>
+        private static void SetValueData(CarProps p, RegistryTraceData data, bool asNewContent)
+        {
+            string value, type;
+            RegistryHelper.ReadValue(data.KeyName, data.ValueName, out value, out type);
+            p.Set("data", value);
+            p.Set("type", type);
+            if (asNewContent) p.Set("new_content", value);
+        }
+
         private void OnRegistryCreate(RegistryTraceData data)
         {
             try { Emit("registry", "add", RegistryProps(data, false)); }
@@ -28,11 +38,7 @@ namespace GetSybersMitreCar.Writer
             try
             {
                 var p = RegistryProps(data, true);
-                string value, type;
-                RegistryHelper.ReadValue(data.KeyName, data.ValueName, out value, out type);
-                p.Set("data", value);
-                p.Set("type", type);
-                p.Set("new_content", value);
+                SetValueData(p, data, true);
                 Emit("registry", "value_edit", p);
             }
             catch (Exception ex) { Fail("registry/value_edit: " + ex.Message); }
@@ -50,10 +56,16 @@ namespace GetSybersMitreCar.Writer
             catch (Exception ex) { Fail("registry/remove: " + ex.Message); }
         }
 
-        private void OnRegistryAccess(RegistryTraceData data)
+        /// <summary>A key open (no value) or a value query (the value's data and type are read live).</summary>
+        private void OnRegistryAccess(RegistryTraceData data, bool valueQuery)
         {
             if (!_options.RegistryAccess) return;
-            try { Emit("registry", "access", RegistryProps(data, true)); }
+            try
+            {
+                var p = RegistryProps(data, valueQuery);
+                if (valueQuery) SetValueData(p, data, false);
+                Emit("registry", "access", p);
+            }
             catch (Exception ex) { Fail("registry/access: " + ex.Message); }
         }
     }

@@ -18,6 +18,8 @@ namespace GetSybersMitreCar.Writer
 
         public void Set(string field, int value) { _values[field] = value.ToString(System.Globalization.CultureInfo.InvariantCulture); }
 
+        public void Set(string field, long value) { _values[field] = value.ToString(System.Globalization.CultureInfo.InvariantCulture); }
+
         public bool TryGet(string field, out string value) { return _values.TryGetValue(field, out value); }
 
         public IEnumerable<string> Fields { get { return _values.Keys; } }

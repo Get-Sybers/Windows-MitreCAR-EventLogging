@@ -1,14 +1,19 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using System.Text;
+using Microsoft.Win32;
 
 namespace GetSybersMitreCar.Writer
 {
-    /// <summary>What an image file shows about itself: hashes, the embedded Authenticode signer, and whether that signature verifies.</summary>
+    /// <summary>What an image file shows about itself: hashes, the embedded Authenticode signer and whether it verifies, the company in its version resource.</summary>
     public sealed class FileFacts
     {
         public string Md5;
@@ -17,6 +22,33 @@ namespace GetSybersMitreCar.Writer
         public string Signer;
         /// <summary>"true" / "false", or null when the file carries no embedded signature (CAR: empty if not signed).</summary>
         public string SignatureValid;
+        /// <summary>CompanyName from the file's version resource.</summary>
+        public string Company;
+    }
+
+    /// <summary>What a file shows about itself on disk at one instant: timestamps, owner and group, permissions, link target, registered MIME type.</summary>
+    public sealed class FileState
+    {
+        public DateTime? Created;
+        public DateTime? LastWrite;
+        public DateTime? LastAccess;
+        public FileAttributes Attributes;
+        public string Owner;
+        public string OwnerSid;
+        public string Group;
+        public string GroupSid;
+        /// <summary>The DACL in SDDL form: the file's permission set as Windows states it.</summary>
+        public string Mode;
+        public string LinkTarget;
+        public string MimeType;
+
+        public string CreationTime { get { return Created.HasValue ? Formats.Utc(Created.Value) : null; } }
+        public bool Exists { get { return Created.HasValue; } }
+
+        public bool TimesDiffer(FileState other)
+        {
+            return other != null && Exists && other.Exists && (Created != other.Created || LastWrite != other.LastWrite || LastAccess != other.LastAccess);
+        }
     }
 
     public static class FileInspector
@@ -25,6 +57,7 @@ namespace GetSybersMitreCar.Writer
         public const long MaxHashBytes = 64L * 1024 * 1024;
 
         private static readonly ConcurrentDictionary<string, FileFacts> Cache = new ConcurrentDictionary<string, FileFacts>(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, KeyValuePair<DateTime, string>> MimeCache = new ConcurrentDictionary<string, KeyValuePair<DateTime, string>>(StringComparer.OrdinalIgnoreCase);
 
         public static FileFacts Inspect(string path)
         {
@@ -39,6 +72,7 @@ namespace GetSybersMitreCar.Writer
                 if (info.Length <= MaxHashBytes) Hash(path, facts);
                 facts.Signer = Signer(path);
                 facts.SignatureValid = Authenticode.Verify(path);
+                facts.Company = Company(path);
                 if (Cache.Count > 4096) Cache.Clear();
                 Cache[key] = facts;
                 return facts;
@@ -49,26 +83,58 @@ namespace GetSybersMitreCar.Writer
             }
         }
 
-        /// <summary>The file's creation time as it is now (ISO 8601 UTC), or null.</summary>
-        public static string CreationTime(string path)
+        /// <summary>The file (or directory) as it is on disk right now; an empty state when it is not there or not readable.</summary>
+        public static FileState Read(string path)
         {
-            try { return File.Exists(path) ? Formats.Utc(File.GetCreationTimeUtc(path)) : null; }
-            catch (Exception) { return null; }
-        }
-
-        /// <summary>The file's owner account and SID as they are now; both null when unreadable.</summary>
-        public static void Owner(string path, out string owner, out string ownerSid)
-        {
-            owner = null; ownerSid = null;
+            var state = new FileState();
+            if (string.IsNullOrEmpty(path)) return state;
             try
             {
-                var sid = new FileInfo(path).GetAccessControl(System.Security.AccessControl.AccessControlSections.Owner)
-                    .GetOwner(typeof(System.Security.Principal.SecurityIdentifier)) as System.Security.Principal.SecurityIdentifier;
-                if (sid == null) return;
-                ownerSid = sid.Value;
-                try { owner = sid.Translate(typeof(System.Security.Principal.NTAccount)).Value; } catch (Exception) { }
+                bool isDirectory = Directory.Exists(path);
+                if (!isDirectory && !File.Exists(path)) return state;
+                FileSystemInfo info = isDirectory ? (FileSystemInfo)new DirectoryInfo(path) : new FileInfo(path);
+                state.Created = info.CreationTimeUtc;
+                state.LastWrite = info.LastWriteTimeUtc;
+                state.LastAccess = info.LastAccessTimeUtc;
+                state.Attributes = info.Attributes;
+                try
+                {
+                    const AccessControlSections sections = AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access;
+                    FileSystemSecurity security = isDirectory ? (FileSystemSecurity)Directory.GetAccessControl(path, sections) : File.GetAccessControl(path, sections);
+                    var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+                    if (owner != null) { state.OwnerSid = owner.Value; state.Owner = SidNames.Resolve(owner.Value); }
+                    var group = security.GetGroup(typeof(SecurityIdentifier)) as SecurityIdentifier;
+                    if (group != null) { state.GroupSid = group.Value; state.Group = SidNames.Resolve(group.Value); }
+                    string sddl = security.GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+                    state.Mode = string.IsNullOrEmpty(sddl) ? null : sddl;
+                }
+                catch (Exception) { /* security descriptor not readable: those properties stay empty */ }
+                if ((state.Attributes & FileAttributes.ReparsePoint) != 0) state.LinkTarget = ReparsePoints.Target(path);
+                if (!isDirectory) state.MimeType = MimeType(Path.GetExtension(path));
             }
             catch (Exception) { }
+            return state;
+        }
+
+        /// <summary>The "Content Type" the host registers for the extension under HKLM\Software\Classes (machine-wide), or null.</summary>
+        public static string MimeType(string extension)
+        {
+            if (string.IsNullOrEmpty(extension) || extension[0] != '.') return null;
+            KeyValuePair<DateTime, string> cached;
+            if (MimeCache.TryGetValue(extension, out cached) && (DateTime.UtcNow - cached.Key).TotalMinutes < 10) return cached.Value;
+            string type = null;
+            try
+            {
+                using (var k = Registry.LocalMachine.OpenSubKey(@"Software\Classes\" + extension))
+                {
+                    if (k != null) type = k.GetValue("Content Type") as string;
+                }
+            }
+            catch (Exception) { }
+            if (string.IsNullOrEmpty(type)) type = null;
+            if (MimeCache.Count > 1024) MimeCache.Clear();
+            MimeCache[extension] = new KeyValuePair<DateTime, string>(DateTime.UtcNow, type);
+            return type;
         }
 
         private static void Hash(string path, FileFacts facts)
@@ -117,6 +183,77 @@ namespace GetSybersMitreCar.Writer
             }
             catch (Exception) { return null; }
         }
+
+        /// <summary>CompanyName from the version resource; null when the file has none.</summary>
+        private static string Company(string path)
+        {
+            try
+            {
+                string company = FileVersionInfo.GetVersionInfo(path).CompanyName;
+                return string.IsNullOrWhiteSpace(company) ? null : company.Trim();
+            }
+            catch (Exception) { return null; }
+        }
+    }
+
+    /// <summary>The target recorded in a symbolic link or junction (FSCTL_GET_REPARSE_POINT); other reparse tags are not links.</summary>
+    internal static class ReparsePoints
+    {
+        private const uint FILE_READ_ATTRIBUTES = 0x0080;
+        private const uint FILE_SHARE_ALL = 0x7;
+        private const uint OPEN_EXISTING = 3;
+        private const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+        private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+        private const uint FSCTL_GET_REPARSE_POINT = 0x000900A8;
+        private const uint IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003;
+        private const uint IO_REPARSE_TAG_SYMLINK = 0xA000000C;
+        private const int MAXIMUM_REPARSE_DATA_BUFFER_SIZE = 16 * 1024;
+
+        public static string Target(string path)
+        {
+            IntPtr handle = CreateFile(path, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+            if (handle == IntPtr.Zero || handle == new IntPtr(-1)) return null;
+            IntPtr buffer = Marshal.AllocHGlobal(MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
+            try
+            {
+                uint returned;
+                if (!DeviceIoControl(handle, FSCTL_GET_REPARSE_POINT, IntPtr.Zero, 0, buffer, MAXIMUM_REPARSE_DATA_BUFFER_SIZE, out returned, IntPtr.Zero)) return null;
+                uint tag = (uint)Marshal.ReadInt32(buffer, 0);
+                int dataLength = Marshal.ReadInt16(buffer, 4);
+                int header;                                    // where SubstituteNameOffset starts
+                int pathBuffer;                                // where PathBuffer starts
+                if (tag == IO_REPARSE_TAG_SYMLINK) { header = 8; pathBuffer = 20; }
+                else if (tag == IO_REPARSE_TAG_MOUNT_POINT) { header = 8; pathBuffer = 16; }
+                else return null;
+                int substituteOffset = Marshal.ReadInt16(buffer, header), substituteLength = Marshal.ReadInt16(buffer, header + 2);
+                int printOffset = Marshal.ReadInt16(buffer, header + 4), printLength = Marshal.ReadInt16(buffer, header + 6);
+                string target = ReadName(buffer, pathBuffer + printOffset, printLength, dataLength + 8);
+                if (string.IsNullOrEmpty(target)) target = ReadName(buffer, pathBuffer + substituteOffset, substituteLength, dataLength + 8);
+                if (string.IsNullOrEmpty(target)) return null;
+                return PathMapper.ToDosPath(target);
+            }
+            catch (Exception) { return null; }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+                Native.CloseHandle(handle);
+            }
+        }
+
+        private static string ReadName(IntPtr buffer, int offset, int length, int limit)
+        {
+            if (length <= 0 || offset < 0 || offset + length > limit || offset + length > MAXIMUM_REPARSE_DATA_BUFFER_SIZE) return null;
+            var bytes = new byte[length];
+            Marshal.Copy(new IntPtr(buffer.ToInt64() + offset), bytes, 0, length);
+            return Encoding.Unicode.GetString(bytes);
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateFileW")]
+        private static extern IntPtr CreateFile(string fileName, uint desiredAccess, uint shareMode, IntPtr securityAttributes, uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool DeviceIoControl(IntPtr device, uint ioControlCode, IntPtr inBuffer, uint inBufferSize, IntPtr outBuffer, uint outBufferSize, out uint bytesReturned, IntPtr overlapped);
     }
 
     /// <summary>WinVerifyTrust on an embedded Authenticode signature (no network revocation lookups).</summary>
