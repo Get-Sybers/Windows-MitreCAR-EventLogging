@@ -23,8 +23,10 @@ namespace GetSybersMitreCar.Writer
         {
             _log = log;
             _writer = new CarEventWriter();
-            var processes = new ProcessTable();
-            _sources.Add(new KernelSource(_writer, processes, options, log));
+            // Other users' processes open for a PEB read only with SeDebugPrivilege enabled (LocalSystem holds it; an elevated console does too).
+            if (!Privileges.Enable("SeDebugPrivilege")) log.Info("SeDebugPrivilege not held: command lines, working directories and environments of other users' processes will not be read");
+            var processes = new ProcessTable(options.EnvVars);
+            _sources.Add(new KernelSource(_writer, processes, new ModuleMap(), new FlowTable(), options, log));
         }
 
         public void Start()

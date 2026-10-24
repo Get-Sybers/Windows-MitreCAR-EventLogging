@@ -11,8 +11,8 @@ namespace GetSybersMitreCar.Writer
     /// <summary>
     /// The phase-1 source: one real-time kernel ETW session (process, thread, image, file, registry, TCP/IP)
     /// consumed through TraceEvent. Each handler maps one kernel event to one CAR (object, action) and fills the
-    /// object's properties from the event, from a live lookup at that instant, and from the sensor's own process
-    /// table - nothing is inferred. The per-object handlers live in the KernelSource.*.cs partials.
+    /// object's properties from the event, from a live lookup at that instant, and from the sensor's own tables
+    /// (processes, modules, flows) - nothing is inferred. The per-object handlers live in the KernelSource.*.cs partials.
     /// </summary>
     public sealed partial class KernelSource : IEventSource
     {
@@ -20,6 +20,8 @@ namespace GetSybersMitreCar.Writer
 
         private readonly CarEventWriter _writer;
         private readonly ProcessTable _processes;
+        private readonly ModuleMap _modules;
+        private readonly FlowTable _flows;
         private readonly SensorOptions _options;
         private readonly ILog _log;
         private readonly HostIdentity _host = HostIdentity.Current();
@@ -27,10 +29,12 @@ namespace GetSybersMitreCar.Writer
         private Thread _thread;
         private long _handlerErrors;
 
-        public KernelSource(CarEventWriter writer, ProcessTable processes, SensorOptions options, ILog log)
+        public KernelSource(CarEventWriter writer, ProcessTable processes, ModuleMap modules, FlowTable flows, SensorOptions options, ILog log)
         {
             _writer = writer;
             _processes = processes;
+            _modules = modules;
+            _flows = flows;
             _options = options;
             _log = log;
         }
@@ -59,12 +63,13 @@ namespace GetSybersMitreCar.Writer
             k.FileIODelete += OnFileDelete;
             k.FileIORename += OnFileRename;
             k.FileIOSetInfo += OnFileSetInfo;
+            k.FileIOOperationEnd += OnFileOperationEnd;
             k.RegistryCreate += OnRegistryCreate;
             k.RegistrySetValue += OnRegistrySetValue;
             k.RegistryDelete += OnRegistryDeleteKey;
             k.RegistryDeleteValue += OnRegistryDeleteValue;
-            k.RegistryOpen += OnRegistryAccess;
-            k.RegistryQueryValue += OnRegistryAccess;
+            k.RegistryOpen += d => OnRegistryAccess(d, false);
+            k.RegistryQueryValue += d => OnRegistryAccess(d, true);
             k.TcpIpConnect += d => OnTcpStart(d, "outbound", d.saddr.ToString(), d.sport, d.daddr.ToString(), d.dport);
             k.TcpIpAccept += d => OnTcpStart(d, "inbound", d.saddr.ToString(), d.sport, d.daddr.ToString(), d.dport);
             k.TcpIpConnectIPV6 += d => OnTcpStart(d, "outbound", d.saddr.ToString(), d.sport, d.daddr.ToString(), d.dport);
@@ -117,12 +122,6 @@ namespace GetSybersMitreCar.Writer
             if (n <= 20 || n % 1000 == 0) _log.Error(message + (n > 20 ? " (error #" + n + ")" : ""));
         }
 
-        private static void SetPath(CarProps p, string field, string ntPath)
-        {
-            if (string.IsNullOrEmpty(ntPath)) return;
-            p.Set(field, PathMapper.ToDosPath(ntPath));
-        }
-
         /// <summary>file_path / file_name / extension from a kernel file name.</summary>
         private static string SetFilePath(CarProps p, string ntPath)
         {
@@ -136,10 +135,16 @@ namespace GetSybersMitreCar.Writer
             return path;
         }
 
+        /// <summary>md5_hash / sha1_hash / sha256_hash / signer / signature_valid of an image file (process, module or driver object).</summary>
         private static void SetImageFacts(CarProps p, string dosPath)
         {
             if (string.IsNullOrEmpty(dosPath)) return;
-            var f = FileInspector.Inspect(dosPath);
+            SetImageFacts(p, FileInspector.Inspect(dosPath));
+        }
+
+        private static void SetImageFacts(CarProps p, FileFacts f)
+        {
+            if (f == null) return;
             p.Set("md5_hash", f.Md5);
             p.Set("sha1_hash", f.Sha1);
             p.Set("sha256_hash", f.Sha256);

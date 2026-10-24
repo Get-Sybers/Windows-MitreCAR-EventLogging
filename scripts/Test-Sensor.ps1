@@ -109,9 +109,15 @@ if ($r) { Show $r
     Expect ($r.P['image_path'] -like '*\cmd.exe') 'image_path from the kernel event'
     Expect ($r.P['sha256_hash'] -match '^[0-9a-f]{64}$') 'sha256_hash of the image'
     Expect ($r.P['sid'] -like 'S-1-*') 'sid from the live token'
-    Expect (@('low','medium','high','system') -contains $r.P['integrity_level']) 'integrity_level from the live token' }
+    Expect (@('low','medium','high','system') -contains $r.P['integrity_level']) 'integrity_level from the live token'
+    Expect ($r.P['current_working_directory'] -match '^[A-Za-z]:\\') 'current_working_directory from the PEB'
+    Expect ($r.P['env_vars'] -match 'PATH=') 'env_vars from the PEB'
+    Expect ($r.P['parent_command_line'] -like '*powershell*' -or $r.P['parent_command_line'] -like '*pwsh*') 'parent_command_line (this PowerShell)' }
 $r = First 1003 { param($p) $p['pid'] -eq "$($child.Id)" }
 Expect ($null -ne $r) 'process/terminate present'
+if ($r) {
+    Expect ($r.P['sha256_hash'] -match '^[0-9a-f]{64}$') 'process/terminate carries the image hash observed at start'
+    Expect ($r.P['env_vars'] -match 'PATH=') 'process/terminate carries the environment observed at start' }
 
 Write-Host "--- file 1102 create / 1107 write / 1105 read / 1106 timestomp / 1104 modify (rename) / 1103 delete ($marker) ---"
 foreach ($pair in @(@(1102,'create',$file), @(1107,'write',$file), @(1105,'read',$file), @(1106,'timestomp',$file), @(1104,'modify',$file), @(1103,'delete',$renamed))) {
@@ -121,7 +127,13 @@ foreach ($pair in @(@(1102,'create',$file), @(1107,'write',$file), @(1105,'read'
     if ($r -and $action -in 'create','delete') { Show $r
         Expect ($r.P['file_name'] -like "$marker*") 'file_name'
         Expect ($r.P['extension'] -eq '.txt') 'extension'
-        Expect ($r.P['image_path'] -like '*powershell.exe' -or $r.P['image_path'] -like '*pwsh.exe') 'image_path = this PowerShell' }
+        Expect ($r.P['image_path'] -like '*powershell.exe' -or $r.P['image_path'] -like '*pwsh.exe') 'image_path = this PowerShell'
+        Expect ($r.P['company'] -like '*Microsoft*') 'company from the acting image version resource'
+        Expect ($r.P['sha256_hash'] -match '^[0-9a-f]{64}$') 'sha256_hash of the acting image' }
+    if ($r -and $action -eq 'create') {
+        Expect ($r.P['owner_uid'] -like 'S-1-*') 'owner_uid of the created file'
+        Expect ($r.P['mode'] -match '(^|;)D:') 'mode: the file DACL in SDDL form'
+        Expect ([bool]$r.P['creation_time']) 'creation_time of the created file' }
 }
 
 Write-Host "--- registry 1301 add / 1304 value_edit / 1303 remove (GSCAR-Test-$marker) ---"
@@ -141,11 +153,15 @@ if ($r) { Show $r
     Expect ($r.P['transport_protocol'] -eq 'tcp') 'transport_protocol'
     Expect ($r.P['network_direction'] -eq 'outbound') 'network_direction'
     Expect ($r.P['dest_ip'] -eq '127.0.0.1') 'dest_ip'
-    Expect ($r.P['start_time'] -match '^\d{4}-\d{2}-\d{2}T') 'start_time ISO 8601' }
+    Expect ($r.P['start_time'] -match '^\d{4}-\d{2}-\d{2}T') 'start_time ISO 8601'
+    Expect ($r.P['dest_hostname'] -eq $env:COMPUTERNAME) 'dest_hostname = this host (loopback is local, no DNS)' }
 $r = First 1203 { param($p) $p['pid'] -eq "$PID" -and $p['src_port'] -eq "$port" -and $p['network_direction'] -eq 'inbound' }
 Expect ($null -ne $r) 'flow/start present (inbound accept)'
 $r = First 1201 { param($p) $p['pid'] -eq "$PID" -and ($p['dest_port'] -eq "$port" -or $p['src_port'] -eq "$port") }
 Expect ($null -ne $r) 'flow/end present'
+if ($r) { Show $r
+    Expect ($r.P['end_time'] -match '^\d{4}-\d{2}-\d{2}T') 'end_time ISO 8601'
+    Expect (($r.P['in_bytes'] -match '^\d+$') -or ($r.P['out_bytes'] -match '^\d+$')) 'byte counts tallied on the flow' }
 
 Write-Host "--- module 1401 (loads into cmd.exe pid $($child.Id)) ---"
 $r = First 1401 { param($p) $p['pid'] -eq "$($child.Id)" -and $p['module_name'] -eq 'kernel32.dll' }
@@ -155,7 +171,8 @@ if ($r) { Show $r; Expect ($r.P['base_address'] -like '0x*') 'base_address'; Exp
 Write-Host "--- thread 1501 create / 1504 terminate (in cmd.exe pid $($child.Id)) ---"
 $r = First 1501 { param($p) $p['tgt_pid'] -eq "$($child.Id)" }
 Expect ($null -ne $r) 'thread/create in the child'
-if ($r) { Show $r; Expect ($r.P['start_address'] -like '0x*') 'start_address'; Expect ($r.P['tgt_tid'] -match '^\d+$') 'tgt_tid' }
+if ($r) { Show $r; Expect ($r.P['start_address'] -like '0x*') 'start_address'; Expect ($r.P['tgt_tid'] -match '^\d+$') 'tgt_tid'
+    Expect ($r.P['start_module_name'] -match '\.(dll|exe)$') 'start_module_name resolved from the module map' }
 $r = First 1504 { param($p) $p['tgt_pid'] -eq "$($child.Id)" }
 Expect ($null -ne $r) 'thread/terminate in the child'
 

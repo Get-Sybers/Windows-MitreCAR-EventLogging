@@ -12,16 +12,10 @@ namespace GetSybersMitreCar.Writer
         {
             try
             {
-                if (IsKernelProcess(data.ProcessID)) { Driver("load", data, true); return; }
-                var p = new CarProps();
-                _processes.Describe(p, "module", data.ProcessID, _host);
                 string path = PathMapper.ToDosPath(data.FileName);
-                p.Set("module_path", path);
-                p.Set("module_name", Path.GetFileName(path));
-                p.Set("base_address", Formats.Hex(data.ImageBase));
-                p.Set("tid", data.ThreadID);
-                SetImageFacts(p, path);
-                Emit("module", "load", p);
+                _modules.Load(data.ProcessID, data.ImageBase, (ulong)(uint)data.ImageSize, path);
+                if (IsKernelProcess(data.ProcessID)) { Driver("load", data, path); return; }
+                Emit("module", "load", ModuleProps(data, path));
             }
             catch (Exception ex) { Fail("module/load: " + ex.Message); }
         }
@@ -30,33 +24,40 @@ namespace GetSybersMitreCar.Writer
         {
             try
             {
-                if (IsKernelProcess(data.ProcessID)) { Driver("unload", data, false); return; }
-                var p = new CarProps();
-                _processes.Describe(p, "module", data.ProcessID, _host);
                 string path = PathMapper.ToDosPath(data.FileName);
-                p.Set("module_path", path);
-                p.Set("module_name", Path.GetFileName(path));
-                p.Set("base_address", Formats.Hex(data.ImageBase));
-                p.Set("tid", data.ThreadID);
-                Emit("module", "unload", p);
+                _modules.Unload(data.ProcessID, data.ImageBase);
+                if (IsKernelProcess(data.ProcessID)) { Driver("unload", data, path); return; }
+                Emit("module", "unload", ModuleProps(data, path));
             }
             catch (Exception ex) { Fail("module/unload: " + ex.Message); }
         }
 
-        /// <summary>A kernel-mode image loaded or unloaded by the kernel itself: CAR driver.</summary>
-        private void Driver(string action, ImageLoadTraceData data, bool withFacts)
+        /// <summary>The module object: the hosting process, the module file (hashed and checked on disk - still there at unload), its base, the loading thread.</summary>
+        private CarProps ModuleProps(ImageLoadTraceData data, string path)
+        {
+            var p = new CarProps();
+            _processes.Describe(p, "module", data.ProcessID, _host);
+            p.Set("module_path", path);
+            p.Set("module_name", Path.GetFileName(path));
+            p.Set("base_address", Formats.Hex(data.ImageBase));
+            p.Set("tid", data.ThreadID);
+            SetImageFacts(p, path);
+            return p;
+        }
+
+        /// <summary>A kernel-mode image loaded or unloaded by the kernel itself: CAR driver. The file is on disk for both, so it is hashed and checked for both.</summary>
+        private void Driver(string action, ImageLoadTraceData data, string path)
         {
             try
             {
                 var p = new CarProps();
                 p.Set("hostname", _host.HostName);
                 p.Set("fqdn", _host.Fqdn);
-                string path = PathMapper.ToDosPath(data.FileName);
                 p.Set("image_path", path);
                 p.Set("module_name", Path.GetFileName(path));
                 p.Set("base_address", Formats.Hex(data.ImageBase));
                 p.Set("pid", data.ProcessID);
-                if (withFacts) SetImageFacts(p, path);
+                SetImageFacts(p, path);
                 Emit("driver", action, p);
             }
             catch (Exception ex) { Fail("driver/" + action + ": " + ex.Message); }

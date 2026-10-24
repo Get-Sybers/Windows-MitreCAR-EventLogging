@@ -14,6 +14,8 @@ namespace GetSybersMitreCar.Writer
         public bool FlowMessages;
         /// <summary>registry/access for every key open and value query.</summary>
         public bool RegistryAccess;
+        /// <summary>process env_vars: the environment block read from the new process (off with --no-env-vars; it can hold secrets).</summary>
+        public bool EnvVars = true;
 
         public bool Console;
         public int DurationSeconds;
@@ -38,6 +40,7 @@ namespace GetSybersMitreCar.Writer
                     case "--file-reads": o.FileReads = true; break;
                     case "--flow-messages": o.FlowMessages = true; break;
                     case "--registry-access": o.RegistryAccess = true; break;
+                    case "--no-env-vars": o.EnvVars = false; break;
                     case "--selftest":
                         o.SelfTest = true;
                         while (i + 1 < list.Count && int.TryParse(list[i + 1], out int id)) { o.SelfTestIds.Add(id); i++; }
@@ -52,7 +55,7 @@ namespace GetSybersMitreCar.Writer
 
         public override string ToString()
         {
-            return "threads=" + Threads + " file-reads=" + FileReads + " flow-messages=" + FlowMessages + " registry-access=" + RegistryAccess;
+            return "threads=" + Threads + " file-reads=" + FileReads + " flow-messages=" + FlowMessages + " registry-access=" + RegistryAccess + " env-vars=" + EnvVars;
         }
     }
 }
