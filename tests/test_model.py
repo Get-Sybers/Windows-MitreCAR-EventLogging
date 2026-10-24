@@ -146,6 +146,39 @@ class RegistryTest(unittest.TestCase):
                 self.assertTrue(e["definition"], e)
 
 
+class SourcesMapTest(unittest.TestCase):
+    """model/sources-map.yaml (deliverable 5) names only pairs and properties the model has, and covers every pair."""
+
+    def setUp(self):
+        import yaml
+        self.map = yaml.safe_load((ROOT / "model" / "sources-map.yaml").read_text(encoding="utf-8"))
+        self.model, _ = carmodel.build()
+        self.events = {(e["object"], e["action"]): e for e in self.model["events"]}
+        self.fields = {o["key"]: {f["name"] for f in o["fields"]} for o in self.model["objects"]}
+
+    def test_every_pair_in_the_model_is_in_the_map_and_vice_versa(self):
+        pairs = {(p["object"], p["action"]) for p in self.map["pairs"]}
+        self.assertEqual(pairs, set(self.events))
+        for p in self.map["pairs"]:
+            self.assertEqual(p["id"], self.events[(p["object"], p["action"])]["id"], p)
+            self.assertIn(p["status"], ("implemented", "planned", "none"), p)
+
+    def test_every_property_named_exists_on_its_object(self):
+        for p in self.map["pairs"]:
+            props = p.get("properties")
+            if isinstance(props, dict):
+                for f in props:
+                    self.assertIn(f, self.fields[p["object"]], (p["object"], p["action"], f))
+
+    def test_phase_one_objects_are_implemented(self):
+        implemented = {(p["object"], p["action"]) for p in self.map["pairs"] if p["status"] == "implemented"}
+        for pair in [("process", "create"), ("process", "terminate"), ("file", "create"), ("file", "delete"), ("file", "write"),
+                     ("file", "modify"), ("file", "timestomp"), ("flow", "start"), ("flow", "end"), ("registry", "add"),
+                     ("registry", "remove"), ("registry", "value_edit"), ("module", "load"), ("module", "unload"),
+                     ("thread", "create"), ("thread", "remote_create"), ("thread", "terminate"), ("driver", "load"), ("driver", "unload")]:
+            self.assertIn(pair, implemented)
+
+
 class ManifestTest(unittest.TestCase):
     def setUp(self):
         self.model, _ = carmodel.build()

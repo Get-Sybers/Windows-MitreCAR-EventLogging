@@ -1,12 +1,9 @@
 name: ci
 
-# Two gates:
-#   model   (ubuntu)  the object × action matrix and the property sets match the pinned CAR model
-#                     exactly, cross-checked against Byakugan's `car-vocab` / `model/schema`; the
-#                     generated table, JSON model and manifest are fresh.
-#   channel (windows) the manifest compiles into the resource DLL, registers as the channel, and every
-#                     EventID writes and reads back as object (Task) + action (Opcode) + properties; then
-#                     the C# writer is built and run against a live process start/stop.
+# One gate, no compilation: the object × action matrix and the property sets match the pinned CAR
+# model exactly, cross-checked against Byakugan's `car-vocab` / `model/schema`, and the generated
+# table, JSON model, manifest and C# model table are fresh. Everything that produces binaries (the
+# resource DLL via mc.exe, the writer via dotnet) is built on Windows with scripts/build.ps1, not here.
 
 on:
   push:
@@ -17,7 +14,7 @@ permissions:
 
 jobs:
   model:
-    name: pinned model ⇄ registry ⇄ generated table + manifest
+    name: pinned model ⇄ registry ⇄ generated outputs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,52 +67,8 @@ jobs:
           print('car-vocab.json matches model/car/objects at the pin:', len(have), 'objects')
           PY
 
-      - name: Validate the model and fail on generated-output drift (table, JSON, manifest)
+      - name: Validate the model and fail on generated-output drift (table, JSON, manifest, C# model)
         run: python tools/carmodel.py check
 
       - name: Unit tests
         run: python -m pytest -q tests
-
-  channel:
-    name: manifest → resource DLL → channel → write/read every EventID
-    runs-on: windows-latest
-    needs: model
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build GetSybersMitreCar.dll (mc.exe → rc.exe → link.exe /noentry — resources only, no source code)
-        shell: pwsh
-        run: ./scripts/Build-Manifest.ps1 -OutDir build
-
-      - name: Register the provider and the Get-Sybers-MitreCAR/Operational channel (wevtutil im)
-        shell: pwsh
-        run: ./scripts/Install-Provider.ps1 -Dll build/GetSybersMitreCar.dll
-
-      - name: Write one populated and one empty event per EventID, read all back, verify object/action/properties
-        shell: powershell
-        run: ./scripts/Test-Channel.ps1 -Header build/GetSybersMitreCar.h
-
-      - name: Build the writer (C#, .NET Framework 4.8)
-        shell: pwsh
-        run: dotnet build src/GetSybersMitreCar.Writer -c Release -nologo
-
-      - name: Run the writer against a live process start and stop; read process/create and process/terminate back
-        shell: pwsh
-        run: ./scripts/Test-Writer.ps1
-
-      - name: Unregister
-        if: always()
-        shell: pwsh
-        run: ./scripts/Uninstall-Provider.ps1
-
-      - name: Publish the installable set (resource DLL, manifest, writer, scripts)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: GetSybersMitreCar
-          path: |
-            build/GetSybersMitreCar.dll
-            build/GetSybersMitreCar.h
-            manifest/GetSybersMitreCar.man
-            src/GetSybersMitreCar.Writer/bin/Release/net48/
-            scripts/*.ps1

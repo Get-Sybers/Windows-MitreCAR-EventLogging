@@ -49,6 +49,28 @@ namespace GetSybersMitreCar.Writer
             }
         }
 
+        /// <summary>The file's creation time as it is now (ISO 8601 UTC), or null.</summary>
+        public static string CreationTime(string path)
+        {
+            try { return File.Exists(path) ? Formats.Utc(File.GetCreationTimeUtc(path)) : null; }
+            catch (Exception) { return null; }
+        }
+
+        /// <summary>The file's owner account and SID as they are now; both null when unreadable.</summary>
+        public static void Owner(string path, out string owner, out string ownerSid)
+        {
+            owner = null; ownerSid = null;
+            try
+            {
+                var sid = new FileInfo(path).GetAccessControl(System.Security.AccessControl.AccessControlSections.Owner)
+                    .GetOwner(typeof(System.Security.Principal.SecurityIdentifier)) as System.Security.Principal.SecurityIdentifier;
+                if (sid == null) return;
+                ownerSid = sid.Value;
+                try { owner = sid.Translate(typeof(System.Security.Principal.NTAccount)).Value; } catch (Exception) { }
+            }
+            catch (Exception) { }
+        }
+
         private static void Hash(string path, FileFacts facts)
         {
             using (var md5 = MD5.Create())

@@ -1,0 +1,610 @@
+# model/sources-map.yaml — the provider→CAR map: which live Windows telemetry supplies each (object, action)
+# and each property. Deliverable 5 of the brief, as data. The C# writer implements exactly this; the unit
+# tests check every pair and property named here exists in the model.
+#
+# status: implemented (in the writer today) | planned (source identified, not yet consumed) |
+#         none (no in-box live source — the EventID exists in the manifest, nothing populates it)
+# property sources: "event <Field>" = the kernel event's payload; "live <what>" = read from the running
+# system at the instant the event is handled; "sensor" = the sensor's own earlier observation of the same
+# object (the process table it builds from process starts); "host" = the observing machine.
+# Properties not listed are written empty.
+sources:
+  kernel:
+    name: NT kernel logger (system trace), consumed in real time through Microsoft.Diagnostics.Tracing.TraceEvent
+    session: GSCAR-Sensor
+    keywords:
+    - Process
+    - Thread
+    - ImageLoad
+    - FileIO
+    - FileIOInit
+    - DiskFileIO
+    - Registry
+    - NetworkTCPIP
+  security: Security channel (Microsoft-Windows-Security-Auditing), push subscription (EvtSubscribe) - phase 2
+  system: System channel (Service Control Manager, Winlogon, LsaSrv), push subscription - phase 2
+  terminalservices: Microsoft-Windows-TerminalServices-LocalSessionManager/Operational, push subscription - phase 2
+  afd: Microsoft-Windows-Winsock-AFD provider - phase 3
+pairs:
+- object: process
+  action: create
+  id: 1002
+  status: implemented
+  source: kernel
+  trigger: Process/Start
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: event KernelImageFileName (NT path -> drive path)
+    user: sensor process table / live token (TokenUser -> account name)
+    ppid: event ParentID
+    exe: event ImageFileName
+    command_line: event CommandLine
+    sid: live token
+    integrity_level: 'live token (TokenIntegrityLevel: low/medium/high/system)'
+    parent_image_path: live QueryFullProcessImageName(ppid)
+    parent_exe: basename of parent_image_path
+    md5_hash: live file hash
+    sha1_hash: live file hash
+    sha256_hash: live file hash
+    signer: live embedded Authenticode subject (catalog-signed files have none)
+    signature_valid: live WinVerifyTrust
+- object: process
+  action: terminate
+  id: 1003
+  status: implemented
+  source: kernel
+  trigger: Process/End
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: event KernelImageFileName
+    user: sensor process table / live token (TokenUser -> account name)
+    ppid: event ParentID
+    exe: event ImageFileName
+    command_line: event CommandLine
+- object: process
+  action: access
+  id: 1001
+  status: planned
+  source: Microsoft-Windows-Kernel-Audit-API-Calls (OpenProcess)
+- object: process
+  action: execute
+  id: 1050
+  status: none
+- object: process
+  action: metadata
+  id: 1051
+  status: none
+- object: process
+  action: modify
+  id: 1052
+  status: none
+- object: file
+  action: create
+  id: 1102
+  status: implemented
+  source: kernel
+  trigger: FileIO/Create with CreateDisposition Supersede, Create or OverwriteIf (a file is created or replaced)
+  note: OpenIf opens an existing file in almost every call and is not counted as a creation
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
+    user: sensor process table / live token (TokenUser -> account name)
+    file_path: event FileName (NT path -> drive path)
+    file_name: basename of file_path
+    extension: suffix of file_path
+    uid: live process token SID
+    creation_time: live file creation time
+    owner: live file owner account
+    owner_uid: live file owner SID
+- object: file
+  action: delete
+  id: 1103
+  status: implemented
+  source: kernel
+  trigger: FileIO/Delete (FileDispositionInformation)
+  properties: &id001
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
+    user: sensor process table / live token (TokenUser -> account name)
+    file_path: event FileName (NT path -> drive path)
+    file_name: basename of file_path
+    extension: suffix of file_path
+    uid: live process token SID
+- object: file
+  action: modify
+  id: 1104
+  status: implemented
+  source: kernel
+  trigger: FileIO/Rename; FileIO/SetInfo with any class other than FileBasicInformation
+  properties: *id001
+- object: file
+  action: read
+  id: 1105
+  status: implemented
+  source: kernel
+  trigger: 'FileIO/Read (off by default: --file-reads)'
+  properties: *id001
+- object: file
+  action: timestomp
+  id: 1106
+  status: implemented
+  source: kernel
+  trigger: FileIO/SetInfo with FileBasicInformation (timestamps and attributes)
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
+    user: sensor process table / live token (TokenUser -> account name)
+    file_path: event FileName (NT path -> drive path)
+    file_name: basename of file_path
+    extension: suffix of file_path
+    uid: live process token SID
+    creation_time: live file creation time after the change
+- object: file
+  action: write
+  id: 1107
+  status: implemented
+  source: kernel
+  trigger: FileIO/Write
+  properties: *id001
+- object: file
+  action: acl_modify
+  id: 1101
+  status: planned
+  source: Microsoft-Windows-Kernel-File SetSecurity (31); Security 4670 / 4907
+- object: file
+  action: access
+  id: 1150
+  status: none
+  note: FileIO/Create with an open disposition is every file open on the machine; not emitted
+- object: file
+  action: content
+  id: 1151
+  status: none
+- object: file
+  action: metadata
+  id: 1152
+  status: none
+- object: flow
+  action: start
+  id: 1203
+  status: implemented
+  source: kernel
+  trigger: TcpIp/Connect (outbound) and TcpIp/Accept (inbound), IPv4 and IPv6
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
+    user: sensor process table / live token (TokenUser -> account name)
+    exe: basename of image_path
+    src_ip: event saddr
+    src_port: event sport
+    dest_ip: event daddr
+    dest_port: event dport
+    uid: live process token SID
+    transport_protocol: tcp
+    network_direction: outbound for Connect, inbound for Accept
+    start_time: event timestamp (UTC, ISO 8601)
+- object: flow
+  action: end
+  id: 1201
+  status: implemented
+  source: kernel
+  trigger: TcpIp/Disconnect, IPv4 and IPv6
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
+    user: sensor process table / live token (TokenUser -> account name)
+    exe: basename of image_path
+    src_ip: event saddr
+    src_port: event sport
+    dest_ip: event daddr
+    dest_port: event dport
+    uid: live process token SID
+    transport_protocol: tcp
+    end_time: event timestamp (UTC, ISO 8601)
+- object: flow
+  action: message
+  id: 1202
+  status: implemented
+  source: kernel
+  trigger: 'TcpIp/Send, TcpIp/Recv, UdpIp/Send, UdpIp/Recv (off by default: --flow-messages)'
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
+    user: sensor process table / live token (TokenUser -> account name)
+    exe: basename of image_path
+    src_ip: event saddr
+    src_port: event sport
+    dest_ip: event daddr
+    dest_port: event dport
+    uid: live process token SID
+    transport_protocol: tcp or udp
+    out_bytes: event size on send
+    in_bytes: event size on receive
+- object: flow
+  action: content
+  id: 1250
+  status: none
+- object: flow
+  action: create
+  id: 1251
+  status: none
+  note: the connect event is emitted as flow/start
+- object: flow
+  action: flow
+  id: 1252
+  status: none
+- object: registry
+  action: add
+  id: 1301
+  status: implemented
+  source: kernel
+  trigger: Registry/Create (NtCreateKey)
+  note: the kernel event carries no disposition, so NtCreateKey on an existing key also yields registry/add
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
+    user: sensor process table / live token (TokenUser -> account name)
+    key: event KeyName (\REGISTRY\MACHINE -> HKLM, \REGISTRY\USER -> HKU)
+    hive: root of KeyName (HKEY_LOCAL_MACHINE, HKEY_USERS)
+- object: registry
+  action: remove
+  id: 1303
+  status: implemented
+  source: kernel
+  trigger: Registry/Delete (a key) and Registry/DeleteValue (a value)
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
+    user: sensor process table / live token (TokenUser -> account name)
+    key: event KeyName
+    value: event ValueName (DeleteValue)
+    hive: root of KeyName
+- object: registry
+  action: value_edit
+  id: 1304
+  status: implemented
+  source: kernel
+  trigger: Registry/SetValue
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
+    user: sensor process table / live token (TokenUser -> account name)
+    key: event KeyName
+    value: event ValueName
+    hive: root of KeyName
+    data: live read of the value after the set
+    type: live value type (REG_SZ, REG_DWORD, ...)
+    new_content: same as data
+- object: registry
+  action: key_edit
+  id: 1302
+  status: planned
+  source: Security 4657 (no kernel ETW rename event)
+- object: registry
+  action: access
+  id: 1350
+  status: implemented
+  source: kernel
+  trigger: 'Registry/Open and Registry/QueryValue (off by default: --registry-access)'
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
+    user: sensor process table / live token (TokenUser -> account name)
+    key: event KeyName
+    value: event ValueName
+    hive: root of KeyName
+- object: registry
+  action: create
+  id: 1351
+  status: none
+  note: the create event is emitted as registry/add
+- object: registry
+  action: delete
+  id: 1352
+  status: none
+  note: emitted as registry/remove
+- object: registry
+  action: modify
+  id: 1353
+  status: none
+  note: value changes are emitted as registry/value_edit
+- object: module
+  action: load
+  id: 1401
+  status: implemented
+  source: kernel
+  trigger: Image/Load in a user-mode process
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
+    module_path: event FileName (-> drive path)
+    module_name: basename of module_path
+    base_address: event ImageBase (0x hex)
+    tid: event ThreadID
+    md5_hash: live file hash
+    sha1_hash: live file hash
+    sha256_hash: live file hash
+    signer: live embedded Authenticode subject (catalog-signed files have none)
+    signature_valid: live WinVerifyTrust
+- object: module
+  action: unload
+  id: 1402
+  status: implemented
+  source: kernel
+  trigger: Image/Unload in a user-mode process
+  properties:
+    hostname: host
+    fqdn: host (when domain-joined)
+    pid: event ProcessID
+    image_path: sensor process table (image path seen at process start), else live QueryFullProcessImageName
+    module_path: event FileName
+    module_name: basename of module_path
+    base_address: event ImageBase
+    tid: event ThreadID
+- object: module
+  action: content
+  id: 1450
+  status: none
+- object: module
+  action: metadata
+  id: 1451
+  status: none
+- object: thread
+  action: create
+  id: 1501
+  status: implemented
+  source: kernel
+  trigger: 'Thread/Start whose creating process is the owning process (off by default: --threads)'
+  properties:
+    hostname: host
+    src_pid: event ParentProcessID
+    src_tid: event ParentThreadID
+    tgt_pid: event ProcessID
+    tgt_tid: event ThreadID
+    stack_base: event StackBase
+    stack_limit: event StackLimit
+    user_stack_base: event UserStackBase
+    user_stack_limit: event UserStackLimit
+    start_address: event Win32StartAddr
+    user: sensor process table / live token of src_pid
+    uid: live token SID of src_pid
+- object: thread
+  action: remote_create
+  id: 1502
+  status: implemented
+  source: kernel
+  trigger: Thread/Start whose creating process differs from the owning process (always on)
+  properties: as thread/create
+- object: thread
+  action: terminate
+  id: 1504
+  status: implemented
+  source: kernel
+  trigger: 'Thread/End (off by default: --threads)'
+  properties:
+    hostname: host
+    tgt_pid: event ProcessID
+    tgt_tid: event ThreadID
+    stack_base: event StackBase
+    stack_limit: event StackLimit
+    user_stack_base: event UserStackBase
+    user_stack_limit: event UserStackLimit
+    start_address: event Win32StartAddr
+- object: thread
+  action: suspend
+  id: 1503
+  status: planned
+  source: Microsoft-Windows-Threat-Intelligence (protected-process access only)
+- object: driver
+  action: load
+  id: 1601
+  status: implemented
+  source: kernel
+  trigger: Image/Load with the kernel's process id (0 or 4)
+  properties:
+    hostname: host
+    fqdn: host
+    image_path: event FileName (-> drive path)
+    module_name: basename of image_path
+    base_address: event ImageBase (0x hex)
+    pid: event ProcessID
+    md5_hash: live file hash
+    sha1_hash: live file hash
+    sha256_hash: live file hash
+    signer: live embedded Authenticode subject (catalog-signed files have none)
+    signature_valid: live WinVerifyTrust
+- object: driver
+  action: unload
+  id: 1602
+  status: implemented
+  source: kernel
+  trigger: Image/Unload with the kernel's process id
+  properties:
+    hostname: host
+    fqdn: host
+    image_path: event FileName
+    module_name: basename of image_path
+    base_address: event ImageBase
+    pid: event ProcessID
+- object: driver
+  action: metadata
+  id: 1650
+  status: none
+- object: service
+  action: create
+  id: 1801
+  status: planned
+  source: System 7045; Security 4697
+- object: service
+  action: start
+  id: 1804
+  status: planned
+  source: System 7036 (running)
+- object: service
+  action: stop
+  id: 1805
+  status: planned
+  source: System 7036 (stopped); 7034
+- object: service
+  action: pause
+  id: 1803
+  status: planned
+  source: System 7036 (paused)
+- object: service
+  action: delete
+  id: 1802
+  status: none
+- object: service
+  action: modify
+  id: 1853
+  status: planned
+  source: System 7040
+- object: service
+  action: access
+  id: 1850
+  status: none
+- object: service
+  action: enumerate
+  id: 1851
+  status: none
+- object: service
+  action: metadata
+  id: 1852
+  status: none
+- object: user_session
+  action: login
+  id: 1702
+  status: planned
+  source: Security 4624 (interactive-class logon types); System 7001; TerminalServices-LocalSessionManager 21
+- object: user_session
+  action: logout
+  id: 1703
+  status: planned
+  source: Security 4634 / 4647; System 7002; TerminalServices-LocalSessionManager 23
+- object: user_session
+  action: lock
+  id: 1701
+  status: planned
+  source: Security 4800
+- object: user_session
+  action: unlock
+  id: 1705
+  status: planned
+  source: Security 4801
+- object: user_session
+  action: reconnect
+  id: 1704
+  status: planned
+  source: Security 4778; TerminalServices-LocalSessionManager 25
+- object: user_session
+  action: create
+  id: 1750
+  status: none
+  note: emitted as user_session/login
+- object: user_session
+  action: terminate
+  id: 1752
+  status: none
+  note: emitted as user_session/logout
+- object: user_session
+  action: metadata
+  id: 1751
+  status: planned
+  source: Security 4672
+- object: authentication
+  action: success
+  id: 1903
+  status: planned
+  source: Security 4624, 4776, 4768
+- object: authentication
+  action: failure
+  id: 1902
+  status: planned
+  source: Security 4625, 4771, 4776 (failure)
+- object: authentication
+  action: error
+  id: 1901
+  status: planned
+  source: System LsaSrv 40960, 6040
+- object: socket
+  action: bind
+  id: 2201
+  status: planned
+  source: Microsoft-Windows-Winsock-AFD
+- object: socket
+  action: listen
+  id: 2203
+  status: planned
+  source: Microsoft-Windows-Winsock-AFD
+- object: socket
+  action: close
+  id: 2202
+  status: planned
+  source: Microsoft-Windows-Winsock-AFD
+- object: http
+  action: get
+  id: 2101
+  status: planned
+  source: Microsoft-Windows-HttpService / WinINet
+- object: http
+  action: post
+  id: 2102
+  status: planned
+  source: Microsoft-Windows-HttpService / WinINet
+- object: http
+  action: put
+  id: 2103
+  status: planned
+  source: Microsoft-Windows-HttpService / WinINet
+- object: http
+  action: tunnel
+  id: 2104
+  status: planned
+  source: Microsoft-Windows-HttpService / WinINet
+- object: email
+  action: deliver
+  id: 2003
+  status: none
+  note: no in-box mail-server eventing
+- object: email
+  action: block
+  id: 2001
+  status: none
+- object: email
+  action: redirect
+  id: 2005
+  status: none
+- object: email
+  action: quarantine
+  id: 2004
+  status: none
+- object: email
+  action: delete
+  id: 2002
+  status: none

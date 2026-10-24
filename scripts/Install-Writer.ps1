@@ -7,10 +7,11 @@ The provider must be registered first (Install-Provider.ps1).
 #>
 [CmdletBinding()]
 param(
-    [string]$SourceDir  = (Join-Path $PSScriptRoot '..\src\GetSybersMitreCar.Writer\bin\Release\net48'),
+    [string]$SourceDir  = (Join-Path $PSScriptRoot '..\dist\writer'),
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'Get-Sybers\MitreCAR')
 )
 $ErrorActionPreference = 'Stop'
+if (-not (Test-Path (Join-Path $SourceDir 'GetSybersMitreCar.Writer.exe'))) { $SourceDir = Join-Path $PSScriptRoot '..\src\GetSybersMitreCar.Writer\bin\Release\net48' }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item -Force -Recurse -Path (Join-Path $SourceDir '*') -Destination $InstallDir
 $exe = Join-Path $InstallDir 'GetSybersMitreCar.Writer.exe'

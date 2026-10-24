@@ -52,6 +52,22 @@ namespace GetSybersMitreCar.Writer
             return result;
         }
 
+        /// <summary>The parent pid as the kernel records it now (0 when the process cannot be opened).</summary>
+        public static int ParentPid(int pid)
+        {
+            IntPtr process = Native.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if (process == IntPtr.Zero) return 0;
+            try
+            {
+                var pbi = new Native.PROCESS_BASIC_INFORMATION();
+                int len;
+                if (Native.NtQueryInformationProcess(process, 0, ref pbi, Marshal.SizeOf(typeof(Native.PROCESS_BASIC_INFORMATION)), out len) != 0) return 0;
+                return pbi.InheritedFromUniqueProcessId.ToInt32();
+            }
+            catch (Exception) { return 0; }
+            finally { Native.CloseHandle(process); }
+        }
+
         public static string ImagePath(int pid)
         {
             IntPtr process = Native.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
@@ -120,5 +136,19 @@ namespace GetSybersMitreCar.Writer
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr info, int infoLength, out int returnLength);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PROCESS_BASIC_INFORMATION
+        {
+            public IntPtr Reserved1;
+            public IntPtr PebBaseAddress;
+            public IntPtr Reserved2_0;
+            public IntPtr Reserved2_1;
+            public IntPtr UniqueProcessId;
+            public IntPtr InheritedFromUniqueProcessId;
+        }
+
+        [DllImport("ntdll.dll")]
+        public static extern int NtQueryInformationProcess(IntPtr process, int infoClass, ref PROCESS_BASIC_INFORMATION info, int infoLength, out int returnLength);
     }
 }

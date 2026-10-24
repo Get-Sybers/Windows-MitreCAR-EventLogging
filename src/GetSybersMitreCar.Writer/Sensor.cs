@@ -11,7 +11,7 @@ namespace GetSybersMitreCar.Writer
         void Stop();
     }
 
-    /// <summary>The sensor: one event writer, one or more live sources.</summary>
+    /// <summary>The sensor: one event writer, the process table, one or more live sources.</summary>
     public sealed class Sensor : IDisposable
     {
         private readonly ILog _log;
@@ -19,11 +19,12 @@ namespace GetSybersMitreCar.Writer
         private readonly List<IEventSource> _sources = new List<IEventSource>();
         private bool _started;
 
-        public Sensor(ILog log)
+        public Sensor(ILog log, SensorOptions options)
         {
             _log = log;
             _writer = new CarEventWriter();
-            _sources.Add(new KernelProcessSource(_writer, log));
+            var processes = new ProcessTable();
+            _sources.Add(new KernelSource(_writer, processes, options, log));
         }
 
         public void Start()
@@ -45,7 +46,7 @@ namespace GetSybersMitreCar.Writer
             {
                 try { s.Stop(); } catch (Exception ex) { _log.Error("stopping " + s.Name + ": " + ex.Message); }
             }
-            _log.Info("sensor stopped: " + _writer.Written + " events written, " + _writer.Failed + " failed");
+            _log.Info("sensor stopped: " + _writer.Written + " events written, " + _writer.Failed + " refused by ETW");
         }
 
         public void Dispose()

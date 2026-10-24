@@ -8,63 +8,68 @@ namespace GetSybersMitreCar.Writer
     {
         private static int Main(string[] args)
         {
-            bool console = false;
-            int duration = 0;
-            for (int i = 0; i < args.Length; i++)
-            {
-                switch (args[i])
-                {
-                    case "--console":
-                        console = true;
-                        break;
-                    case "--duration":
-                        if (i + 1 >= args.Length || !int.TryParse(args[++i], out duration)) { Usage(); return 2; }
-                        console = true;
-                        break;
-                    case "-h":
-                    case "/?":
-                    case "--help":
-                        Usage();
-                        return 0;
-                    default:
-                        Console.Error.WriteLine("unknown argument: " + args[i]);
-                        Usage();
-                        return 2;
-                }
-            }
+            string error;
+            var options = SensorOptions.Parse(args, out error);
+            if (error != null) { Console.Error.WriteLine(error); Usage(); return 2; }
+            if (args.Length == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "/?")) { Usage(); return 0; }
 
-            if (!console)
+            if (options.SelfTest) return SelfTest(options);
+
+            if (!options.Console)
             {
                 ServiceBase.Run(new SensorService());
                 return 0;
             }
 
             var log = new ConsoleLog();
-            using (var sensor = new Sensor(log))
+            using (var sensor = new Sensor(log, options))
             {
-                try
-                {
-                    sensor.Start();
-                }
-                catch (Exception ex)
-                {
-                    log.Error("sensor failed to start: " + ex);
-                    return 1;
-                }
+                try { sensor.Start(); }
+                catch (Exception ex) { log.Error("sensor failed to start: " + ex); return 1; }
                 var stop = new ManualResetEvent(false);
                 Console.CancelKeyPress += (s, e) => { e.Cancel = true; stop.Set(); };
-                if (duration > 0) stop.WaitOne(TimeSpan.FromSeconds(duration)); else stop.WaitOne();
+                if (options.DurationSeconds > 0) stop.WaitOne(TimeSpan.FromSeconds(options.DurationSeconds)); else stop.WaitOne();
                 sensor.Stop();
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// Channel self-test: for every EventID (or the given ones) write one event whose every property holds its
+        /// own name, then one whose every property is empty, through the same EventWrite path the live sensor uses.
+        /// </summary>
+        private static int SelfTest(SensorOptions options)
+        {
+            using (var writer = new CarEventWriter())
+            {
+                int n = 0;
+                foreach (var e in CarModel.Events)
+                {
+                    if (options.SelfTestIds.Count > 0 && !options.SelfTestIds.Contains(e.Id)) continue;
+                    var o = CarModel.Object(e.Object);
+                    var full = new CarProps();
+                    foreach (var f in o.Fields) full.Set(f, f);
+                    if (!writer.Write(e.Object, e.Action, full)) { Console.Error.WriteLine("EventWrite failed for " + e.Id + " (Win32 " + writer.LastError + ")"); return 1; }
+                    if (!writer.Write(e.Object, e.Action, new CarProps())) { Console.Error.WriteLine("EventWrite failed for " + e.Id + " (Win32 " + writer.LastError + ")"); return 1; }
+                    n += 2;
+                }
+                Console.WriteLine("selftest: wrote " + n + " events to " + CarModel.ChannelName);
             }
             return 0;
         }
 
         private static void Usage()
         {
-            Console.Error.WriteLine("GetSybersMitreCar.Writer [--console] [--duration <seconds>]");
-            Console.Error.WriteLine("  (no arguments)        run as the GetSybersMitreCar Windows service");
+            Console.Error.WriteLine("GetSybersMitreCar.Writer [--console] [--duration <seconds>] [--threads] [--file-reads] [--flow-messages] [--registry-access]");
+            Console.Error.WriteLine("GetSybersMitreCar.Writer --selftest [eventid ...]");
+            Console.Error.WriteLine("  (no arguments)        run as the GetSybersMitreCar Windows service (flags may follow in the service's binPath)");
             Console.Error.WriteLine("  --console             run in the foreground until Ctrl+C (needs an elevated prompt)");
             Console.Error.WriteLine("  --duration <seconds>  run in the foreground for a fixed time, then exit");
+            Console.Error.WriteLine("  --threads             also emit thread/create and thread/terminate for in-process threads (remote_create is always on)");
+            Console.Error.WriteLine("  --file-reads          also emit file/read");
+            Console.Error.WriteLine("  --flow-messages       also emit flow/message for every TCP/UDP send and receive");
+            Console.Error.WriteLine("  --registry-access     also emit registry/access for every key open and value query");
+            Console.Error.WriteLine("  --selftest            write two events per EventID (properties = their names, then all empty) and exit");
         }
     }
 
@@ -103,7 +108,13 @@ namespace GetSybersMitreCar.Writer
         public SensorService() { ServiceName = "GetSybersMitreCar"; CanStop = true; AutoLog = false; }
         protected override void OnStart(string[] args)
         {
-            _sensor = new Sensor(new EventLogLog());
+            // flags may be given on the service's binPath (sc create ... binPath= "...exe --threads")
+            var cmd = Environment.GetCommandLineArgs();
+            var rest = new string[Math.Max(0, cmd.Length - 1)];
+            Array.Copy(cmd, 1, rest, 0, rest.Length);
+            string error;
+            var options = SensorOptions.Parse(rest, out error);
+            _sensor = new Sensor(new EventLogLog(), options);
             _sensor.Start();
         }
         protected override void OnStop()

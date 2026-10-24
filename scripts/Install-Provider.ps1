@@ -12,11 +12,12 @@ existing registration is removed first.
 #>
 [CmdletBinding()]
 param(
-    [string]$Dll        = (Join-Path $PSScriptRoot '..\build\GetSybersMitreCar.dll'),
+    [string]$Dll        = (Join-Path $PSScriptRoot '..\dist\GetSybersMitreCar.dll'),
     [string]$Manifest   = (Join-Path $PSScriptRoot '..\manifest\GetSybersMitreCar.man'),
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'Get-Sybers\MitreCAR')
 )
 $ErrorActionPreference = 'Stop'
+if (-not (Test-Path $Dll)) { $Dll = Join-Path $PSScriptRoot '..\build\GetSybersMitreCar.dll' }
 $Dll = (Resolve-Path $Dll).Path
 $Manifest = (Resolve-Path $Manifest).Path
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null

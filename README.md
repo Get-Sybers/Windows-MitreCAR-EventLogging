@@ -20,8 +20,26 @@ any SIEM. A property that was not observed is written empty, never inferred.
 | Step | State |
 |---|---|
 | 1. EventID table derived from the pinned model | done — [`docs/EventID-Table.md`](docs/EventID-Table.md) |
-| 2. Manifest, build, register, prove the channel | manifest generated — [`manifest/GetSybersMitreCar.man`](manifest/GetSybersMitreCar.man); CI builds the DLL, registers the channel and writes/reads back every EventID (`scripts/`) |
-| 3. Writer: live telemetry → events | C#/.NET service (`src/GetSybersMitreCar.Writer`): first slice observes process start/stop from the kernel ETW provider in real time and writes `process/create` / `process/terminate`; CI launches a process and reads the events back |
+| 2. Manifest, build, register | done — [`manifest/GetSybersMitreCar.man`](manifest/GetSybersMitreCar.man) is generated from the model; `scripts/build.ps1` compiles it (and the sensor) on Windows |
+| 3. Sensor, phase 1 | done in code — `src/GetSybersMitreCar.Writer`: one real-time kernel ETW session → process, file, flow, registry, module, thread and driver events; `scripts/Test-Sensor.ps1` exercises each against real activity |
+| 4. Provider → CAR map as data | done — [`model/sources-map.yaml`](model/sources-map.yaml): every pair's source, trigger and property origin (implemented / planned / none) |
+| 5. Phases 2–3 | next — service, user_session, authentication from the Security/System/TerminalServices channels; socket, http |
+
+Nothing is compiled on GitHub Actions: CI only checks the model. Build on a Windows machine with the
+Windows SDK, MSVC and the .NET SDK installed:
+
+```powershell
+.\scripts\build.ps1                    # manifest -> dist\GetSybersMitreCar.dll ; sensor -> dist\writer\ ; SHA256SUMS
+.\scripts\Install-Provider.ps1         # wevtutil im -> the channel appears in Event Viewer      (elevated)
+.\scripts\Test-Channel.ps1             # sensor --selftest writes 2 events per EventID; all 146 read back and verified
+.\scripts\Test-Sensor.ps1              # runs the sensor against live process/file/registry/network/module/thread activity
+.\scripts\Install-Writer.ps1           # the GetSybersMitreCar service (LocalSystem, automatic start)
+.\scripts\Uninstall-Writer.ps1; .\scripts\Uninstall-Provider.ps1
+```
+
+The sensor runs as a service by default, or in the foreground with `--console` / `--duration <s>`. The
+high-volume pairs are opt-in flags: `--threads` (thread create/terminate inside a process; remote_create
+is always on), `--file-reads`, `--flow-messages`, `--registry-access`.
 
 ## The model
 
@@ -43,21 +61,6 @@ action name, one Keyword bit per object. The full table: [`docs/EventID-Table.md
 Ranges 2300/2400/2500 are reserved for the schema's promoted objects (group, scheduled_job,
 user_account — no CAR field sets yet) and 9000–9099 for sensor self-events.
 
-## Install and try it (Windows, elevated)
-
-```powershell
-# channel: from the CI artefact `GetSybersMitreCar`, or build locally (Windows SDK + MSVC link.exe; code-free resource DLL)
-.\scripts\Build-Manifest.ps1            # manifest/GetSybersMitreCar.man -> build/GetSybersMitreCar.dll
-.\scripts\Install-Provider.ps1          # wevtutil im -> the channel appears in Event Viewer
-.\scripts\Test-Channel.ps1 -EventId 1002  # writes two process/create events (New-WinEvent) and reads them back
-
-# sensor: build (dotnet build src/GetSybersMitreCar.Writer -c Release) or take it from the artefact, then
-.\scripts\Test-Writer.ps1               # runs it in the foreground, starts cmd.exe, checks 1002/1003 for that pid
-.\scripts\Install-Writer.ps1            # or install it as the GetSybersMitreCar service (LocalSystem, automatic)
-
-.\scripts\Uninstall-Writer.ps1; .\scripts\Uninstall-Provider.ps1
-```
-
 ## Authoritative sources (pinned)
 
 | What | Where | Pin |
@@ -72,19 +75,20 @@ Elastic or STIX outputs.
 
 ```
 manifest/GetSybersMitreCar.man        the instrumentation manifest — GENERATED from the model
-src/GetSybersMitreCar.Writer/         the sensor (C#, .NET Framework 4.8): ETW consumer → CAR events; CarModel.g.cs is GENERATED
-scripts/                              Build-Manifest, Install/Uninstall-Provider, Test-Channel, Test-Writer, Install/Uninstall-Writer
+src/GetSybersMitreCar.Writer/         the sensor (C#, .NET Framework 4.8): kernel ETW → CAR events; CarModel.g.cs is GENERATED
+scripts/                              build.ps1, Build-Manifest, Install/Uninstall-Provider, Test-Channel, Test-Sensor, Install/Uninstall-Writer
 model/
   sources/car/                        pinned MITRE CAR data model (submodule)
   sources/byakugan/                   PIN.yaml + the vendored vocabulary / schema / ATT&CK / bindings files
   eventids.yaml                       THE registry: objects → Task/base/Keyword, actions → Opcode, (object, action) → EventID
   templates.yaml                      the value format per CAR property (every property is win:UnicodeString)
+  sources-map.yaml                    the provider → CAR map: source, trigger and property origin per (object, action)
   generated/car-eventlog-model.json   the derived model, machine-readable
 docs/EventID-Table.md                 the numbered table — GENERATED
 docs/Decisions.md                     decisions taken, including the writer's design
 tools/carmodel.py                     generate | check | dump | matrix
 tests/test_model.py                   unit tests (unittest / pytest)
-.github/workflows/ci.yml              model drift gate (ubuntu) + build/register/write/read gate (windows)
+.github/workflows/ci.yml              model drift gate only (no compilation on Actions)
 ```
 
 ```sh

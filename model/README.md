@@ -14,6 +14,7 @@ one against the other before rendering anything.
 | `sources/byakugan/matched-evidences.yaml` | `model/schema/matched-evidences.yaml` at the pin; only its `evtx:` section is read (Windows event → (object, action) bindings) | never — re-vendor |
 | `eventids.yaml` | **the EventID registry** — objects → Task/base/Keyword, actions → Opcode, (object, action) → EventID, reserved ranges; the numbering rule is in its header | yes, under the change protocol |
 | `templates.yaml` | the value format per CAR property; every property is `win:UnicodeString` (empty = not observed) | yes |
+| `sources-map.yaml` | the provider → CAR map (deliverable 5): per (object, action) the live source, the trigger and where each property comes from; `implemented` / `planned` / `none` | yes — in step with the writer |
 | `generated/car-eventlog-model.json` | the derived model — every object with its properties and events — what the manifest and the scripts read | never — `generate` |
 
 ## Regenerate

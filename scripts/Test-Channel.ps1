@@ -1,94 +1,83 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-Writes CAR events to the Get-Sybers-MitreCAR/Operational channel and reads them back, checking object,
-action and properties for every EventID.
+Proves the registered channel end to end: the sensor's own emitter writes two events per EventID (every
+property populated, then every property empty), and each is read back and checked for object (Task),
+action (Opcode), keyword, property names and values, and a rendered message.
 
 .DESCRIPTION
-For each EventID in the model (or those given with -EventId) two events are written: one with every
-property set to the CAR example value, one with every property empty (empty = not observed). Events are
-written with the in-box New-WinEvent cmdlet, which marshals the payload from the registered template - no
-compiled code. The event descriptors mc.exe generated into the header when the DLL was built are checked
-against the values the model (and the C# writer) compute: same id, channel, level, opcode, task and keywords.
-
-Each event read back must have: the EventID; Task = the object (number and display name); Opcode = the
-action (number and display name); the object's keyword; EventData property names in the model's order
-with the written values; and a rendered message (which proves the resource DLL is found).
-
-Runs under Windows PowerShell 5.1 or PowerShell 7 on Windows (New-WinEvent is in Microsoft.PowerShell.Diagnostics).
+Needs the provider registered (Install-Provider.ps1) and the writer built (build.ps1). Runs elevated:
+clearing the channel and the sensor's EventRegister need it. When the mc.exe header is present, every
+event descriptor in it is also compared with the values the model (and the writer) compute.
 #>
 [CmdletBinding()]
 param(
-    [string]$Header = (Join-Path $PSScriptRoot '..\build\GetSybersMitreCar.h'),
+    [string]$Exe    = (Join-Path $PSScriptRoot '..\dist\writer\GetSybersMitreCar.Writer.exe'),
+    [string]$Header = (Join-Path $PSScriptRoot '..\dist\GetSybersMitreCar.h'),
     [string]$Model  = (Join-Path $PSScriptRoot '..\model\generated\car-eventlog-model.json'),
     [int[]]$EventId,
     [switch]$SkipClear,
     [int]$TimeoutSeconds = 60
 )
 $ErrorActionPreference = 'Stop'
+if (-not (Test-Path $Exe)) { $Exe = Join-Path $PSScriptRoot '..\src\GetSybersMitreCar.Writer\bin\Release\net48\GetSybersMitreCar.Writer.exe' }
+$Exe = (Resolve-Path $Exe).Path
+
 # NB: $Model is the [string] path parameter; PowerShell variables are case-insensitive, so the parsed
-# model must live in a differently named variable or it is coerced back to a string.
+# model lives in $spec.
 $spec = Get-Content -Raw -Encoding UTF8 $Model | ConvertFrom-Json
 if (-not $spec -or -not $spec.events) { throw "could not read the model from $Model" }
 $log = $spec.provider.channel.name
 
-# --- event descriptors from the mc.exe header -----------------------------------------------
-# EXTERN_C __declspec(selectany) const EVENT_DESCRIPTOR GSCAR_PROCESS_CREATE = {0x3ea, 0x0, 0x10, 0x4, 0x10, 0x1, 0x8000000000000001};
-$descriptors = @{}
-foreach ($m in (Select-String -Path $Header -Pattern 'EVENT_DESCRIPTOR\s+(\w+)\s*=\s*\{([^}]*)\}')) {
-    $g = $m.Matches[0].Groups
-    $p = @($g[2].Value -split ',' | ForEach-Object { $_.Trim() -replace '^0[xX]', '' })
-    $descriptors[$g[1].Value] = [pscustomobject]@{
-        Id = [Convert]::ToInt32($p[0], 16); Version = [Convert]::ToInt32($p[1], 16); Channel = [Convert]::ToInt32($p[2], 16)
-        Level = [Convert]::ToInt32($p[3], 16); Opcode = [Convert]::ToInt32($p[4], 16); Task = [Convert]::ToInt32($p[5], 16)
-        Keywords = [Convert]::ToUInt64($p[6], 16)
+# --- optional: the descriptors mc.exe generated must equal what the model (and the writer) compute ---
+if (Test-Path $Header) {
+    $descriptors = @{}
+    foreach ($m in (Select-String -Path $Header -Pattern 'EVENT_DESCRIPTOR\s+(\w+)\s*=\s*\{([^}]*)\}')) {
+        $g = $m.Matches[0].Groups
+        $p = @($g[2].Value -split ',' | ForEach-Object { $_.Trim() -replace '^0[xX]', '' })
+        $descriptors[$g[1].Value] = [pscustomobject]@{
+            Id = [Convert]::ToInt32($p[0], 16); Version = [Convert]::ToInt32($p[1], 16); Channel = [Convert]::ToInt32($p[2], 16)
+            Level = [Convert]::ToInt32($p[3], 16); Opcode = [Convert]::ToInt32($p[4], 16); Task = [Convert]::ToInt32($p[5], 16)
+            Keywords = [Convert]::ToUInt64($p[6], 16)
+        }
     }
+    $channelKeyword = [Convert]::ToUInt64($spec.channel_keyword.Substring(2), 16)
+    $mismatches = @()
+    foreach ($e in $spec.events) {
+        $d = $descriptors[$e.symbol]
+        if (-not $d) { $mismatches += "$($e.symbol): missing from the header"; continue }
+        $wantKeywords = [Convert]::ToUInt64($e.keyword.Substring(2), 16) -bor $channelKeyword
+        $want = "id=$($e.id) version=0 channel=$($spec.provider.channel.value) level=4 opcode=$($e.opcode) task=$($e.task) keywords=0x$($wantKeywords.ToString('x16'))"
+        $have = "id=$($d.Id) version=$($d.Version) channel=$($d.Channel) level=$($d.Level) opcode=$($d.Opcode) task=$($d.Task) keywords=0x$($d.Keywords.ToString('x16'))"
+        if ($want -ne $have) { $mismatches += "$($e.symbol): header $have != model $want" }
+    }
+    if ($mismatches) { throw "descriptor mismatch between mc.exe's header and the model:`n  " + ($mismatches -join "`n  ") }
+    Write-Host ("descriptors: all {0} in the header equal the model's (channel keyword 0x{1})" -f @($spec.events).Count, $channelKeyword.ToString('x16'))
 }
-if ($descriptors.Count -eq 0) { throw "no EVENT_DESCRIPTOR found in $Header" }
-
-# --- the descriptors mc.exe generated must equal what the model (and the C# writer) compute --------
-$channelKeyword = [Convert]::ToUInt64($spec.channel_keyword.Substring(2), 16)
-$mismatches = @()
-foreach ($e in $spec.events) {
-    $d = $descriptors[$e.symbol]
-    if (-not $d) { $mismatches += "$($e.symbol): missing from the header"; continue }
-    $wantKeywords = [Convert]::ToUInt64($e.keyword.Substring(2), 16) -bor $channelKeyword
-    $want = "id=$($e.id) version=0 channel=$($spec.provider.channel.value) level=4 opcode=$($e.opcode) task=$($e.task) keywords=0x$($wantKeywords.ToString('x16'))"
-    $have = "id=$($d.Id) version=$($d.Version) channel=$($d.Channel) level=$($d.Level) opcode=$($d.Opcode) task=$($d.Task) keywords=0x$($d.Keywords.ToString('x16'))"
-    if ($want -ne $have) { $mismatches += "$($e.symbol): header $have != model $want" }
-}
-if ($mismatches) { throw "descriptor mismatch between mc.exe's header and the model:`n  " + ($mismatches -join "`n  ") }
-Write-Host ("descriptors: all {0} in the header equal the model's (channel keyword 0x{1})" -f $spec.events.Count, $channelKeyword.ToString('x16'))
 
 $fieldsOf = @{}
 foreach ($o in $spec.objects) { $fieldsOf[$o.key] = @($o.fields) }
-
 $all = @($spec.events)
-if ($PSBoundParameters.ContainsKey('EventId')) {
-    $events = @($all | Where-Object { $EventId -contains [int]$_.id })
-} else {
-    $events = $all
-}
-Write-Host ("model: {0} objects, {1} events; selected {2}" -f @($spec.objects).Count, $all.Count, $events.Count)
+$events = if ($PSBoundParameters.ContainsKey('EventId')) { @($all | Where-Object { $EventId -contains [int]$_.id }) } else { $all }
 if ($events.Count -eq 0) { throw "no events selected (EventId filter: $($EventId -join ','))" }
+Write-Host ("model: {0} objects, {1} events; testing {2}" -f @($spec.objects).Count, $all.Count, $events.Count)
 
 if (-not $SkipClear) {
     & wevtutil.exe cl $log
     if ($LASTEXITCODE) { throw "wevtutil cl $log failed ($LASTEXITCODE) - run elevated or pass -SkipClear" }
 }
 
-# --- write (New-WinEvent marshals the payload from the registered template; no 8-string cap) ------
+# --- write: the sensor's self-test mode writes, per EventID, one event with every property set to its own
+#     name and one with every property empty, through the same EventWrite path the live sensor uses ---------
+$args = @('--selftest') + @($events | ForEach-Object { "$($_.id)" })
+& $Exe @args
+if ($LASTEXITCODE) { throw "writer --selftest exited with $LASTEXITCODE" }
 $expected = New-Object System.Collections.Generic.List[object]
 foreach ($e in $events) {
     $fields = $fieldsOf[$e.object]
-    $full  = [object[]]@($fields | ForEach-Object { if ($null -ne $_.example) { [string]$_.example } else { '' } })
-    $empty = [object[]]@($fields | ForEach-Object { '' })
-    foreach ($payload in @($full, $empty)) {
-        New-WinEvent -ProviderName $spec.provider.name -Id $e.id -Version 0 -Payload $payload
-        $expected.Add([pscustomobject]@{ Event = $e; Payload = $payload })
-    }
+    $expected.Add([pscustomobject]@{ Event = $e; Payload = @($fields | ForEach-Object { $_.name }) })
+    $expected.Add([pscustomobject]@{ Event = $e; Payload = @($fields | ForEach-Object { '' }) })
 }
-Write-Host ("wrote {0} events ({1} EventIDs x 2) to {2}" -f $expected.Count, $events.Count, $log)
 
 # --- read back ---------------------------------------------------------------------------------
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
